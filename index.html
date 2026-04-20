@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Kasir</title>
+</head>
+<body>
+  <h1>Kasir Sederhana</h1>
+  <button onclick="kirim()">Tambah Transaksi</button>
+
+  <script>
+    async function kirim() {
+      await fetch("/api/tambah", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          nama: "Mochi",
+          total: 10000
+        })
+      });
+
+      alert("Data masuk!");
+    }
+  </script>
+</body>
+</html>
