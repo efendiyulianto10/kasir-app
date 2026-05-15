@@ -18,6 +18,18 @@ export const clearSupabaseConfig = () => localStorage.removeItem('smp_sb');
 // strip all whitespace (copy-paste often includes \n \t etc)
 const strip = (s: string) => s.replace(/[\s\r\n\t]+/g, '');
 
+// Clean URL: ensure it's just https://xxx.supabase.co with nothing trailing
+function cleanUrl(raw: string): string {
+  let u = strip(raw);
+  // Remove trailing slashes
+  u = u.replace(/\/+$/, '');
+  // Remove /rest/v1 if user pasted the full API url
+  u = u.replace(/\/rest\/v1\/?$/, '');
+  // Remove /rest if partial
+  u = u.replace(/\/rest\/?$/, '');
+  return u;
+}
+
 // base fetch helper
 async function sb(
   cfg: SupabaseConfig,
@@ -25,7 +37,7 @@ async function sb(
   method: 'GET' | 'POST' | 'DELETE' = 'GET',
   body?: unknown,
 ): Promise<{ ok: boolean; status: number; data: unknown; text: string }> {
-  const url = strip(cfg.url);
+  const url = cleanUrl(cfg.url);
   const key = strip(cfg.anonKey);
   const headers: Record<string, string> = {
     apikey: key,
@@ -50,12 +62,12 @@ export async function testConnection(
   rawUrl: string,
   rawKey: string,
 ): Promise<{ success: boolean; message: string; debug: string }> {
-  const url = strip(rawUrl);
+  const url = cleanUrl(rawUrl);
   const key = strip(rawKey);
   const log: string[] = [];
 
-  log.push(`URL : ${url}`);
-  log.push(`Key : ${key.length} chars, starts ${key.substring(0, 20)}…`);
+  log.push(`Clean URL : ${url}`);
+  log.push(`Key       : ${key.length} chars`);
 
   if (!url) return r(false, 'URL kosong', log);
   if (!key) return r(false, 'Key kosong', log);
@@ -64,39 +76,40 @@ export async function testConnection(
   // decode JWT to verify key belongs to this project
   try {
     const payload = JSON.parse(atob(key.split('.')[1]));
-    log.push(`JWT ref : ${payload.ref}`);
-    log.push(`JWT role: ${payload.role}`);
-    log.push(`JWT exp : ${new Date((payload.exp || 0) * 1000).toISOString()}`);
+    log.push(`JWT ref   : ${payload.ref}`);
+    log.push(`JWT role  : ${payload.role}`);
+    log.push(`JWT exp   : ${new Date((payload.exp || 0) * 1000).toISOString()}`);
     if (payload.ref && !url.includes(payload.ref)) {
-      return r(false, `Key ini untuk project "${payload.ref}" tapi URL beda.\nPastikan URL dan Key dari project yang SAMA.`, log);
+      return r(false, `❌ Key ini untuk project "${payload.ref}" tapi URL beda.\nPastikan URL dan Key dari project yang SAMA.`, log);
     }
     if (payload.exp && payload.exp * 1000 < Date.now()) {
-      return r(false, 'Key sudah expired! Buat project baru atau generate ulang key.', log);
+      return r(false, '❌ Key sudah expired!', log);
     }
   } catch { log.push('JWT decode skipped'); }
 
-  // send test query — target table that doesn't exist
+  // Test: query the REST API root — returns OpenAPI spec if auth OK
+  const endpoint = `${url}/rest/v1/`;
+  log.push(`Endpoint  : ${endpoint}`);
+
   try {
-    log.push('Fetching…');
-    const resp = await fetch(`${url}/rest/v1/__ping__?select=id&limit=1`, {
+    const resp = await fetch(endpoint, {
       headers: { apikey: key, Authorization: `Bearer ${key}` },
     });
-    log.push(`HTTP ${resp.status}`);
+    log.push(`HTTP      : ${resp.status}`);
     const body = await resp.text();
-    log.push(`Body: ${body.substring(0, 200)}`);
+    log.push(`Body      : ${body.substring(0, 200)}`);
 
+    // 200 = got OpenAPI spec → auth valid
     if (resp.status === 200) return r(true, '✅ Koneksi berhasil!', log);
-    if (body.includes('does not exist') || body.includes('42P01'))
-      return r(true, '✅ Koneksi berhasil!', log);
-    if (resp.status === 401)
-      return r(false, '❌ API Key ditolak.\nPastikan menggunakan "anon public" key.\nCopy ulang dari Supabase Dashboard → Settings → API.', log);
-    if (resp.status === 403)
-      return r(true, '✅ Koneksi OK (RLS aktif)', log);
+    // 401 = bad key
+    if (resp.status === 401) return r(false, '❌ API Key ditolak.\nPastikan menggunakan "anon public" key.', log);
+    // 403 = RLS blocking root but auth OK
+    if (resp.status === 403) return r(true, '✅ Koneksi berhasil!', log);
 
-    return r(false, `Error ${resp.status}: ${body.substring(0, 100)}`, log);
+    return r(false, `❌ Error ${resp.status}: ${body.substring(0, 100)}`, log);
   } catch (e) {
     log.push(`Exception: ${e}`);
-    return r(false, `Gagal koneksi: ${e instanceof Error ? e.message : e}`, log);
+    return r(false, `❌ Gagal koneksi: ${e instanceof Error ? e.message : e}`, log);
   }
 }
 
