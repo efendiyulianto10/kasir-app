@@ -275,7 +275,8 @@ export default function App() {
         return (
           <DemandTesting 
             demandTests={demandTests} 
-            branches={branches} 
+            branches={branches}
+            transactions={transactions}
             onSave={setDemandTests} 
           />
         );

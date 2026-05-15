@@ -3,14 +3,15 @@ import {
   Users, Store, Map, Package, Settings, Plus, Edit2, Trash2, X, Check, 
   Eye, EyeOff, Shield, ChevronRight, RefreshCw, Download, Upload,
   UserPlus, Building, MapPin, AlertTriangle, Cloud, CloudOff, Loader2,
-  Database, Copy, CheckCircle, XCircle, ArrowUpCircle, ArrowDownCircle
+  Database, Copy, CheckCircle, XCircle, ArrowUpCircle, ArrowDownCircle, Zap
 } from 'lucide-react';
 import { User, saveUsers, roleLabels, roleColors, UserRole, demoUsers } from '../auth';
 import { Branch, Region, Supplier, Product } from '../types';
 import { generateId } from '../store';
 import { 
-  SupabaseConfig, getSupabaseConfig, saveSupabaseConfig, clearSupabaseConfig,
-  testConnection, pushToSupabase, pullFromSupabase, generateFullSetupSQL, getTableInfo
+  SupabaseConfig, getSupabaseConfig, clearSupabaseConfig,
+  pushToSupabase, pullFromSupabase, generateFullSetupSQL, getTableInfo,
+  connectAndSetup
 } from '../supabase';
 
 interface AdminPanelProps {
@@ -85,7 +86,7 @@ export default function AdminPanel({
     totalProducts: products.length,
   };
 
-  // Supabase functions
+  // Supabase functions — 1 tombol: connect + auto create tables + auto push
   const handleTestConnection = async () => {
     if (!supabaseUrl || !supabaseKey) {
       setSyncMessage({ type: 'error', text: 'URL dan API Key harus diisi!' });
@@ -94,38 +95,50 @@ export default function AdminPanel({
 
     setIsTesting(true);
     setDebugLog('');
-    setSyncMessage({ type: 'info', text: '⏳ Menghubungkan...' });
+    setTableStatus([]);
+    setSyncMessage({ type: 'info', text: '⏳ Step 1/4: Menghubungkan ke Supabase...' });
 
-    const result = await testConnection(supabaseUrl, supabaseKey);
+    const result = await connectAndSetup(supabaseUrl, supabaseKey);
     setDebugLog(result.debug || '');
-    
-    if (result.success) {
-      // Simpan config — strip whitespace
-      const config: SupabaseConfig = {
-        url: supabaseUrl.replace(/\s+/g, ''),
-        anonKey: supabaseKey.replace(/\s+/g, ''),
-        enabled: true,
-      };
-      saveSupabaseConfig(config);
-      setSupabaseConfig(config);
-      setSupabaseUrl(config.url);
-      setSupabaseKey(config.anonKey);
-      
-      // Auto check tables
-      setSupabaseUrl(config.url);
-      setSupabaseKey(config.anonKey);
-      setSyncMessage({ type: 'info', text: '✅ Terhubung! Mengecek tabel...' });
-      const tableInfo = await getTableInfo(config);
-      setTableStatus(tableInfo.tables);
-      
-      if (tableInfo.allExist) {
-        setSyncMessage({ type: 'success', text: '✅ Koneksi berhasil & semua tabel siap!' });
+    setTableStatus(result.tables);
+
+    if (result.needsManualSQL) {
+      setSetupSQL(generateFullSetupSQL());
+      setSupabaseConfig(getSupabaseConfig());
+      setSyncMessage({ type: 'error', text: result.message });
+      setIsTesting(false);
+      return;
+    }
+
+    if (!result.success) {
+      setSyncMessage({ type: 'error', text: result.message });
+      setIsTesting(false);
+      return;
+    }
+
+    // Tables ready — auto push data!
+    const cfg = getSupabaseConfig();
+    setSupabaseConfig(cfg);
+
+    if (cfg) {
+      setSyncMessage({ type: 'info', text: '⏳ Step 3/4: Push data ke Supabase...' });
+      const pushResult = await pushToSupabase(cfg);
+      const details = pushResult.results
+        .map(pr => `${pr.status === 'ok' ? '✅' : pr.status === 'empty' ? '⏭️' : '❌'} ${pr.table}: ${pr.count}${pr.error ? ' — '+pr.error : ''}`)
+        .join('\n');
+
+      // Refresh table counts
+      setSyncMessage({ type: 'info', text: '⏳ Step 4/4: Verifikasi...' });
+      const finalInfo = await getTableInfo(cfg);
+      setTableStatus(finalInfo.tables);
+
+      if (pushResult.success) {
+        setSyncMessage({ type: 'success', text: `✅ Selesai! Terhubung & data tersinkronisasi!\n\n${details}` });
       } else {
-        setSetupSQL(generateFullSetupSQL());
-        setSyncMessage({ type: 'error', text: '✅ Terhubung! Tapi tabel belum lengkap.\nKlik "Lihat & Copy SQL" lalu jalankan di Supabase SQL Editor.' });
+        setSyncMessage({ type: 'error', text: `⚠️ Terhubung, tapi ada error saat push:\n\n${details}` });
       }
     } else {
-      setSyncMessage({ type: 'error', text: result.message });
+      setSyncMessage({ type: 'success', text: result.message });
     }
 
     setIsTesting(false);
@@ -608,11 +621,12 @@ export default function AdminPanel({
               <button
                 onClick={handleTestConnection}
                 disabled={isTesting || !supabaseUrl || !supabaseKey}
-                className="w-full py-3 bg-purple-600 text-white rounded-xl font-medium hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="w-full py-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl font-bold hover:from-purple-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg"
               >
-                {isTesting ? <Loader2 size={18} className="animate-spin" /> : <Cloud size={18} />}
-                {isTesting ? 'Menghubungkan...' : 'Test & Simpan Koneksi'}
+                {isTesting ? <Loader2 size={18} className="animate-spin" /> : <Zap size={18} />}
+                {isTesting ? 'Menyiapkan...' : '🚀 Connect, Setup Tabel & Sync Data'}
               </button>
+              <p className="text-xs text-gray-400 text-center">1 klik: test koneksi → buat tabel otomatis → push semua data</p>
             </div>
 
             {/* Table Status */}
