@@ -10,7 +10,7 @@ import { Branch, Region, Supplier, Product } from '../types';
 import { generateId } from '../store';
 import { 
   SupabaseConfig, getSupabaseConfig, saveSupabaseConfig, clearSupabaseConfig,
-  testConnection, pushToSupabase, pullFromSupabase, createTableSQL 
+  testConnection, pushToSupabase, pullFromSupabase, autoSetupTables, generateFullSetupSQL, getTableInfo
 } from '../supabase';
 
 interface AdminPanelProps {
@@ -51,9 +51,12 @@ export default function AdminPanel({
   const [isTesting, setIsTesting] = useState(false);
   const [isPushing, setIsPushing] = useState(false);
   const [isPulling, setIsPulling] = useState(false);
+  const [isCheckingTables, setIsCheckingTables] = useState(false);
   const [syncMessage, setSyncMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [showSqlModal, setShowSqlModal] = useState(false);
   const [sqlCopied, setSqlCopied] = useState(false);
+  const [tableStatus, setTableStatus] = useState<{ name: string; exists: boolean; count: number }[]>([]);
+  const [setupSQL, setSetupSQL] = useState('');
 
   // Forms
   const [userForm, setUserForm] = useState<Partial<User>>({
@@ -164,9 +167,37 @@ export default function AdminPanel({
   };
 
   const copySql = () => {
-    navigator.clipboard.writeText(createTableSQL);
+    const sql = generateFullSetupSQL();
+    navigator.clipboard.writeText(sql);
     setSqlCopied(true);
     setTimeout(() => setSqlCopied(false), 2000);
+  };
+
+  const handleCheckTables = async () => {
+    if (!supabaseConfig) return;
+    
+    setIsCheckingTables(true);
+    setSyncMessage({ type: 'info', text: 'Mengecek tabel di Supabase...' });
+    
+    const result = await autoSetupTables(supabaseConfig);
+    const info = await getTableInfo(supabaseConfig);
+    setTableStatus(info.tables);
+    
+    if (result.needsManualSetup) {
+      setSetupSQL(result.manualSQL);
+      setSyncMessage({ type: 'error', text: result.message });
+    } else {
+      setSyncMessage({ type: 'success', text: result.message });
+      setSupabaseConfig(getSupabaseConfig());
+    }
+    
+    setIsCheckingTables(false);
+  };
+
+  const handleAutoSetup = () => {
+    const sql = generateFullSetupSQL();
+    setSetupSQL(sql);
+    setShowSqlModal(true);
   };
 
   // User CRUD
@@ -528,45 +559,114 @@ export default function AdminPanel({
               </button>
             </div>
 
+            {/* Table Status */}
+            {supabaseConfig?.enabled && (
+              <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-medium text-gray-900 flex items-center gap-2">
+                    <Database size={16} /> Status Tabel Database
+                  </h4>
+                  <button
+                    onClick={handleCheckTables}
+                    disabled={isCheckingTables}
+                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-50"
+                  >
+                    {isCheckingTables ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                    Cek Ulang
+                  </button>
+                </div>
+
+                {tableStatus.length > 0 && (
+                  <div className="grid grid-cols-2 gap-2">
+                    {tableStatus.map(t => (
+                      <div key={t.name} className={`flex items-center justify-between p-2 rounded-lg text-xs ${t.exists ? 'bg-green-50' : 'bg-red-50'}`}>
+                        <span className={t.exists ? 'text-green-700' : 'text-red-700'}>{t.name}</span>
+                        <span className={`font-medium ${t.exists ? 'text-green-600' : 'text-red-600'}`}>
+                          {t.exists ? `✅ ${t.count} rows` : '❌ Belum ada'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {tableStatus.some(t => !t.exists) && (
+                  <button
+                    onClick={handleAutoSetup}
+                    className="w-full py-2 bg-orange-600 text-white rounded-lg text-sm font-medium hover:bg-orange-700 flex items-center justify-center gap-2"
+                  >
+                    <Database size={16} /> Setup Tabel Otomatis (Lihat SQL)
+                  </button>
+                )}
+              </div>
+            )}
+
             {/* Sync Actions */}
             {supabaseConfig?.enabled && (
-              <div className="grid grid-cols-2 gap-4">
-                <button
-                  onClick={handlePush}
-                  disabled={isPushing || isPulling}
-                  className="flex flex-col items-center gap-2 p-4 bg-blue-50 rounded-xl border-2 border-blue-200 hover:bg-blue-100 disabled:opacity-50 transition-all"
-                >
-                  {isPushing ? <Loader2 size={24} className="text-blue-600 animate-spin" /> : <ArrowUpCircle size={24} className="text-blue-600" />}
-                  <span className="font-medium text-blue-900">Push ke Cloud</span>
-                  <span className="text-xs text-blue-600">Upload data lokal ke Supabase</span>
-                </button>
+              <div className="space-y-4">
+                <h4 className="font-medium text-gray-900">🔄 Sinkronisasi Data</h4>
+                <div className="grid grid-cols-2 gap-4">
+                  <button
+                    onClick={handlePush}
+                    disabled={isPushing || isPulling}
+                    className="flex flex-col items-center gap-2 p-4 bg-blue-50 rounded-xl border-2 border-blue-200 hover:bg-blue-100 disabled:opacity-50 transition-all"
+                  >
+                    {isPushing ? <Loader2 size={24} className="text-blue-600 animate-spin" /> : <ArrowUpCircle size={24} className="text-blue-600" />}
+                    <span className="font-medium text-blue-900">Push ke Cloud</span>
+                    <span className="text-xs text-blue-600">Upload semua data lokal ke Supabase</span>
+                  </button>
 
-                <button
-                  onClick={handlePull}
-                  disabled={isPushing || isPulling}
-                  className="flex flex-col items-center gap-2 p-4 bg-green-50 rounded-xl border-2 border-green-200 hover:bg-green-100 disabled:opacity-50 transition-all"
-                >
-                  {isPulling ? <Loader2 size={24} className="text-green-600 animate-spin" /> : <ArrowDownCircle size={24} className="text-green-600" />}
-                  <span className="font-medium text-green-900">Pull dari Cloud</span>
-                  <span className="text-xs text-green-600">Download data dari Supabase</span>
-                </button>
+                  <button
+                    onClick={handlePull}
+                    disabled={isPushing || isPulling}
+                    className="flex flex-col items-center gap-2 p-4 bg-green-50 rounded-xl border-2 border-green-200 hover:bg-green-100 disabled:opacity-50 transition-all"
+                  >
+                    {isPulling ? <Loader2 size={24} className="text-green-600 animate-spin" /> : <ArrowDownCircle size={24} className="text-green-600" />}
+                    <span className="font-medium text-green-900">Pull dari Cloud</span>
+                    <span className="text-xs text-green-600">Download semua data dari Supabase</span>
+                  </button>
+                </div>
               </div>
             )}
 
             {/* SQL Instructions */}
-            <div className="bg-yellow-50 rounded-xl p-4 border border-yellow-200">
-              <h4 className="font-medium text-yellow-900 flex items-center gap-2 mb-2">
-                <AlertTriangle size={16} /> Persiapan Supabase
+            <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl p-4 border border-indigo-200">
+              <h4 className="font-medium text-indigo-900 flex items-center gap-2 mb-2">
+                <Database size={16} /> Setup Database Supabase
               </h4>
-              <p className="text-sm text-yellow-700 mb-3">
-                Sebelum sync, buat tabel di Supabase dengan SQL Editor:
+              <p className="text-sm text-indigo-700 mb-3">
+                Buat semua tabel yang diperlukan dengan menjalankan SQL di Supabase SQL Editor:
               </p>
-              <button
-                onClick={() => setShowSqlModal(true)}
-                className="flex items-center gap-2 text-sm text-yellow-800 font-medium hover:underline"
-              >
-                <Copy size={14} /> Lihat & Copy SQL
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleAutoSetup}
+                  className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700"
+                >
+                  <Copy size={14} /> Lihat & Copy SQL Setup
+                </button>
+                {supabaseConfig?.enabled && (
+                  <button
+                    onClick={handleCheckTables}
+                    disabled={isCheckingTables}
+                    className="flex items-center gap-2 px-4 py-2 bg-white border border-indigo-300 text-indigo-700 rounded-lg text-sm font-medium hover:bg-indigo-50 disabled:opacity-50"
+                  >
+                    {isCheckingTables ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                    Cek Status Tabel
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Instructions */}
+            <div className="bg-gray-50 rounded-xl p-4 text-sm text-gray-600">
+              <h4 className="font-medium text-gray-900 mb-2">📋 Langkah Setup:</h4>
+              <ol className="list-decimal list-inside space-y-1">
+                <li>Buat project di <a href="https://supabase.com" target="_blank" rel="noreferrer" className="text-indigo-600 underline">supabase.com</a></li>
+                <li>Copy URL dan API Key dari Settings → API</li>
+                <li>Masukkan di form di atas, lalu Test Koneksi</li>
+                <li>Klik "Lihat & Copy SQL Setup" dan jalankan di SQL Editor Supabase</li>
+                <li>Klik "Cek Status Tabel" untuk verifikasi</li>
+                <li>Push data lokal ke Supabase</li>
+              </ol>
             </div>
           </div>
         )}
@@ -959,14 +1059,19 @@ export default function AdminPanel({
 
       {/* SQL Modal */}
       {showSqlModal && (
-        <Modal title="SQL untuk Membuat Tabel Supabase" onClose={() => setShowSqlModal(false)}>
+        <Modal title="🛠️ SQL Setup Database SMP" onClose={() => setShowSqlModal(false)}>
           <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              Copy SQL di bawah ini dan jalankan di <b>Supabase → SQL Editor</b>:
-            </p>
+            <div className="bg-indigo-50 rounded-xl p-3 text-sm text-indigo-700">
+              <p className="font-medium">SQL ini akan membuat:</p>
+              <ul className="text-xs mt-1 space-y-0.5">
+                <li>✅ 10 tabel (users, regions, branches, suppliers, products, dll)</li>
+                <li>✅ Indexes untuk performa</li>
+                <li>✅ Row Level Security policies</li>
+              </ul>
+            </div>
             <div className="relative">
-              <pre className="bg-gray-900 text-green-400 p-4 rounded-xl text-xs overflow-x-auto max-h-60">
-                {createTableSQL}
+              <pre className="bg-gray-900 text-green-400 p-4 rounded-xl text-xs overflow-x-auto max-h-72 whitespace-pre-wrap">
+                {setupSQL || generateFullSetupSQL()}
               </pre>
               <button
                 onClick={copySql}
@@ -977,17 +1082,18 @@ export default function AdminPanel({
             </div>
             {sqlCopied && (
               <p className="text-sm text-green-600 flex items-center gap-1">
-                <Check size={14} /> SQL berhasil di-copy!
+                <Check size={14} /> SQL berhasil di-copy ke clipboard!
               </p>
             )}
-            <div className="bg-blue-50 rounded-xl p-3 text-sm text-blue-700">
-              <p className="font-medium mb-1">📝 Langkah-langkah:</p>
+            <div className="bg-yellow-50 rounded-xl p-3 text-sm text-yellow-700">
+              <p className="font-medium mb-1">📝 Cara menjalankan:</p>
               <ol className="list-decimal list-inside space-y-1 text-xs">
-                <li>Buka Supabase Dashboard</li>
-                <li>Pergi ke SQL Editor</li>
-                <li>Paste SQL di atas</li>
-                <li>Klik Run</li>
-                <li>Kembali ke sini dan test koneksi</li>
+                <li>Buka <b>Supabase Dashboard</b> → project Anda</li>
+                <li>Klik <b>SQL Editor</b> di sidebar kiri</li>
+                <li>Klik <b>New Query</b></li>
+                <li>Paste SQL yang sudah di-copy</li>
+                <li>Klik <b>Run</b> (Ctrl+Enter)</li>
+                <li>Tutup modal ini, lalu klik <b>"Cek Status Tabel"</b></li>
               </ol>
             </div>
           </div>
