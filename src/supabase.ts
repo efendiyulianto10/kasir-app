@@ -1,11 +1,7 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
-
 /* =============================================
-   SMP Supabase Integration
-   Menggunakan @supabase/supabase-js SDK resmi
+   SMP Supabase — pure fetch, no external dependency
    ============================================= */
 
-// --- Config ---
 export interface SupabaseConfig {
   url: string;
   anonKey: string;
@@ -14,77 +10,105 @@ export interface SupabaseConfig {
 }
 
 export const getSupabaseConfig = (): SupabaseConfig | null => {
-  try { return JSON.parse(localStorage.getItem('smp_sb_cfg') || 'null'); } catch { return null; }
+  try { return JSON.parse(localStorage.getItem('smp_sb') || 'null'); } catch { return null; }
 };
-export const saveSupabaseConfig = (c: SupabaseConfig) => localStorage.setItem('smp_sb_cfg', JSON.stringify(c));
-export const clearSupabaseConfig = () => { localStorage.removeItem('smp_sb_cfg'); _client = null; };
+export const saveSupabaseConfig = (c: SupabaseConfig) => localStorage.setItem('smp_sb', JSON.stringify(c));
+export const clearSupabaseConfig = () => localStorage.removeItem('smp_sb');
 
-// --- Client singleton ---
-let _client: SupabaseClient | null = null;
+// strip all whitespace (copy-paste often includes \n \t etc)
+const strip = (s: string) => s.replace(/[\s\r\n\t]+/g, '');
 
-function getClient(url?: string, key?: string): SupabaseClient | null {
-  const cfg = getSupabaseConfig();
-  const u = url || cfg?.url;
-  const k = key || cfg?.anonKey;
-  if (!u || !k) return null;
-  // Always recreate if url/key provided (for testing)
-  if (url && key) {
-    _client = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
-    return _client;
-  }
-  if (!_client) {
-    _client = createClient(u, k, { auth: { persistSession: false, autoRefreshToken: false } });
-  }
-  return _client;
+// base fetch helper
+async function sb(
+  cfg: SupabaseConfig,
+  path: string,
+  method: 'GET' | 'POST' | 'DELETE' = 'GET',
+  body?: unknown,
+): Promise<{ ok: boolean; status: number; data: unknown; text: string }> {
+  const url = strip(cfg.url);
+  const key = strip(cfg.anonKey);
+  const headers: Record<string, string> = {
+    apikey: key,
+    Authorization: `Bearer ${key}`,
+    'Content-Type': 'application/json',
+    Prefer: method === 'POST' ? 'return=minimal' : 'return=minimal',
+  };
+  const resp = await fetch(`${url}/rest/v1/${path}`, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await resp.text();
+  let data: unknown = null;
+  try { data = JSON.parse(text); } catch { data = text; }
+  return { ok: resp.ok, status: resp.status, data, text };
 }
 
-// --- Helpers ---
-const strip = (s: string) => s.replace(/\s+/g, '');
+/* ─── Test connection ─── */
 
-const TABLES = {
-  regions:       'smp_regions',
-  branches:      'smp_branches',
-  users:         'smp_users',
-  suppliers:     'smp_suppliers',
-  products:      'smp_products',
-  transactions:  'smp_transactions',
-  stock:         'smp_stock',
-  demand_tests:  'smp_demand_tests',
-  notifications: 'smp_notifications',
-} as const;
+export async function testConnection(
+  rawUrl: string,
+  rawKey: string,
+): Promise<{ success: boolean; message: string; debug: string }> {
+  const url = strip(rawUrl);
+  const key = strip(rawKey);
+  const log: string[] = [];
 
-type TKey = keyof typeof TABLES;
+  log.push(`URL : ${url}`);
+  log.push(`Key : ${key.length} chars, starts ${key.substring(0, 20)}…`);
 
-// field mapping camelCase <-> snake_case
-const C2S: Record<string,string> = {
-  regionId:'region_id', branchId:'branch_id', managerId:'manager_id',
-  managerName:'manager_name', managerPhone:'manager_phone',
-  openDate:'open_date', picName:'pic_name', picPhone:'pic_phone',
-  supplierId:'supplier_id', supplierName:'supplier_name', costPrice:'cost_price',
-  paymentMethod:'payment_method', totalAmount:'total_amount', totalProfit:'total_profit',
-  inputBy:'input_by', createdAt:'created_at',
-  productId:'product_id', productName:'product_name',
-  qtyReceived:'qty_received', qtySold:'qty_sold', qtyReturned:'qty_returned',
-  branchName:'branch_name', startDate:'start_date', endDate:'end_date',
-  totalDays:'total_days', avgDailySales:'avg_daily_sales',
-  avgDailyRevenue:'avg_daily_revenue', avgDailyProfit:'avg_daily_profit',
-};
-const S2C: Record<string,string> = Object.fromEntries(Object.entries(C2S).map(([a,b])=>[b,a]));
+  if (!url) return r(false, 'URL kosong', log);
+  if (!key) return r(false, 'Key kosong', log);
+  if (key.length < 40) return r(false, `Key terlalu pendek (${key.length}). Copy ulang LENGKAP dari Supabase.`, log);
 
-const toSnake = (o: Record<string,unknown>) => {
-  const r: Record<string,unknown> = {};
-  for (const [k,v] of Object.entries(o)) r[C2S[k]||k] = v ?? null;
-  return r;
-};
-const toCamel = (o: Record<string,unknown>) => {
-  const r: Record<string,unknown> = {};
-  for (const [k,v] of Object.entries(o)) r[S2C[k]||k] = v;
-  return r;
-};
+  // decode JWT to verify key belongs to this project
+  try {
+    const payload = JSON.parse(atob(key.split('.')[1]));
+    log.push(`JWT ref : ${payload.ref}`);
+    log.push(`JWT role: ${payload.role}`);
+    log.push(`JWT exp : ${new Date((payload.exp || 0) * 1000).toISOString()}`);
+    if (payload.ref && !url.includes(payload.ref)) {
+      return r(false, `Key ini untuk project "${payload.ref}" tapi URL beda.\nPastikan URL dan Key dari project yang SAMA.`, log);
+    }
+    if (payload.exp && payload.exp * 1000 < Date.now()) {
+      return r(false, 'Key sudah expired! Buat project baru atau generate ulang key.', log);
+    }
+  } catch { log.push('JWT decode skipped'); }
 
-// --- SQL ---
+  // send test query — target table that doesn't exist
+  try {
+    log.push('Fetching…');
+    const resp = await fetch(`${url}/rest/v1/__ping__?select=id&limit=1`, {
+      headers: { apikey: key, Authorization: `Bearer ${key}` },
+    });
+    log.push(`HTTP ${resp.status}`);
+    const body = await resp.text();
+    log.push(`Body: ${body.substring(0, 200)}`);
+
+    if (resp.status === 200) return r(true, '✅ Koneksi berhasil!', log);
+    if (body.includes('does not exist') || body.includes('42P01'))
+      return r(true, '✅ Koneksi berhasil!', log);
+    if (resp.status === 401)
+      return r(false, '❌ API Key ditolak.\nPastikan menggunakan "anon public" key.\nCopy ulang dari Supabase Dashboard → Settings → API.', log);
+    if (resp.status === 403)
+      return r(true, '✅ Koneksi OK (RLS aktif)', log);
+
+    return r(false, `Error ${resp.status}: ${body.substring(0, 100)}`, log);
+  } catch (e) {
+    log.push(`Exception: ${e}`);
+    return r(false, `Gagal koneksi: ${e instanceof Error ? e.message : e}`, log);
+  }
+}
+
+function r(success: boolean, message: string, log: string[]) {
+  return { success, message, debug: log.join('\n') };
+}
+
+/* ─── SQL ─── */
+
 export function generateFullSetupSQL(): string {
-  return `-- SMP Database Setup — Copy SEMUA lalu RUN di SQL Editor
+  return `-- SMP Database Setup
+-- Copy SEMUA, paste di Supabase SQL Editor, klik RUN
 
 CREATE TABLE IF NOT EXISTS smp_regions (
   id text PRIMARY KEY, name text, manager_id text, manager_name text, manager_phone text, created_at timestamptz DEFAULT now()
@@ -122,7 +146,7 @@ CREATE TABLE IF NOT EXISTS smp_notifications (
   id text PRIMARY KEY, type text, message text, branch_id text, phone text, sent boolean DEFAULT false, created_at timestamptz DEFAULT now()
 );
 
--- WAJIB: Matikan RLS supaya anon key bisa akses
+-- MATIKAN RLS — WAJIB agar anon key bisa akses data
 ALTER TABLE smp_regions       DISABLE ROW LEVEL SECURITY;
 ALTER TABLE smp_branches      DISABLE ROW LEVEL SECURITY;
 ALTER TABLE smp_users         DISABLE ROW LEVEL SECURITY;
@@ -133,177 +157,132 @@ ALTER TABLE smp_stock         DISABLE ROW LEVEL SECURITY;
 ALTER TABLE smp_demand_tests  DISABLE ROW LEVEL SECURITY;
 ALTER TABLE smp_notifications DISABLE ROW LEVEL SECURITY;
 
--- SELESAI!
+-- SELESAI! Kembali ke aplikasi, klik Cek Tabel, lalu Push.
 `;
 }
 
-// --- Test Connection ---
-export async function testConnection(rawUrl: string, rawKey: string): Promise<{
-  success: boolean; message: string; debug: string;
-}> {
-  const url = strip(rawUrl);
-  const key = strip(rawKey);
-  const log: string[] = [];
+/* ─── Field maps ─── */
 
-  log.push(`URL: ${url}`);
-  log.push(`Key: ${key.substring(0,25)}... (${key.length} chars)`);
+const C2S: Record<string, string> = {
+  regionId:'region_id', branchId:'branch_id', managerId:'manager_id',
+  managerName:'manager_name', managerPhone:'manager_phone',
+  openDate:'open_date', picName:'pic_name', picPhone:'pic_phone',
+  supplierId:'supplier_id', supplierName:'supplier_name', costPrice:'cost_price',
+  paymentMethod:'payment_method', totalAmount:'total_amount', totalProfit:'total_profit',
+  inputBy:'input_by', createdAt:'created_at',
+  productId:'product_id', productName:'product_name',
+  qtyReceived:'qty_received', qtySold:'qty_sold', qtyReturned:'qty_returned',
+  branchName:'branch_name', startDate:'start_date', endDate:'end_date',
+  totalDays:'total_days', avgDailySales:'avg_daily_sales',
+  avgDailyRevenue:'avg_daily_revenue', avgDailyProfit:'avg_daily_profit',
+};
+const S2C: Record<string, string> = Object.fromEntries(Object.entries(C2S).map(([a, b]) => [b, a]));
 
-  if (!url || !key) return { success: false, message: 'URL dan Key harus diisi!', debug: log.join('\n') };
-  if (key.length < 30) return { success: false, message: `Key terlalu pendek (${key.length}). Copy ulang dari Supabase.`, debug: log.join('\n') };
+const toSnake = (o: Record<string, unknown>) => {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(o)) out[C2S[k] || k] = v ?? null;
+  return out;
+};
+const toCamel = (o: Record<string, unknown>) => {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(o)) out[S2C[k] || k] = v;
+  return out;
+};
 
-  try {
-    const client = getClient(url, key);
-    if (!client) return { success: false, message: 'Gagal buat client', debug: log.join('\n') };
+/* ─── Tables ─── */
 
-    // Query tabel yang pasti tidak ada — untuk test auth
-    const { error } = await client.from('_connection_test_xyz').select('*').limit(1);
-    log.push(`Response error: ${JSON.stringify(error)}`);
+const TABLES: Record<string, string> = {
+  regions: 'smp_regions', branches: 'smp_branches', users: 'smp_users',
+  suppliers: 'smp_suppliers', products: 'smp_products',
+  transactions: 'smp_transactions', stock: 'smp_stock',
+  demand_tests: 'smp_demand_tests', notifications: 'smp_notifications',
+};
+const ORDER = Object.keys(TABLES);
 
-    if (!error) {
-      log.push('No error — connected!');
-      return { success: true, message: '✅ Koneksi berhasil!', debug: log.join('\n') };
-    }
+/* ─── Check tables ─── */
 
-    const msg = (error.message || '').toLowerCase();
-    const code = error.code || '';
-
-    // "relation does not exist" = tabel tidak ada, TAPI AUTH BERHASIL
-    if (msg.includes('does not exist') || msg.includes('relation') || code === '42P01') {
-      log.push('Auth OK — table not found (expected)');
-      return { success: true, message: '✅ Koneksi berhasil!', debug: log.join('\n') };
-    }
-
-    // PGRST301 = JWT expired
-    if (code === 'PGRST301' || msg.includes('jwt')) {
-      // Decode JWT untuk info lebih
-      try {
-        const payload = JSON.parse(atob(key.split('.')[1]));
-        log.push(`JWT ref: ${payload.ref}, exp: ${new Date((payload.exp||0)*1000).toISOString()}`);
-        if (payload.ref && !url.includes(payload.ref)) {
-          return { success: false, message: `❌ Key ini untuk project "${payload.ref}", bukan URL yang dimasukkan!`, debug: log.join('\n') };
-        }
-        if (payload.exp && payload.exp * 1000 < Date.now()) {
-          return { success: false, message: '❌ Key sudah expired!', debug: log.join('\n') };
-        }
-      } catch {}
-      return { success: false, message: '❌ API Key ditolak. Pastikan menggunakan anon/public key.', debug: log.join('\n') };
-    }
-
-    // Auth error
-    if (msg.includes('invalid') || msg.includes('apikey') || msg.includes('unauthorized') || code === 'PGRST302') {
-      return { success: false, message: '❌ API Key tidak valid. Copy ulang "anon public" key.', debug: log.join('\n') };
-    }
-
-    // Unknown error tapi mungkin koneksi OK
-    log.push(`Unknown error code: ${code}`);
-    return { success: false, message: `❌ Error: ${error.message}`, debug: log.join('\n') };
-
-  } catch (e) {
-    log.push(`Exception: ${e}`);
-    return { success: false, message: `❌ ${e instanceof Error ? e.message : 'Gagal koneksi'}`, debug: log.join('\n') };
-  }
-}
-
-// --- Check Tables ---
-export async function checkTables(_cfg?: SupabaseConfig | null): Promise<{
+export async function checkTables(cfg: SupabaseConfig): Promise<{
   tables: { name: string; exists: boolean; count: number; err?: string }[];
   allExist: boolean;
 }> {
-  const client = getClient();
-  if (!client) return { tables: [], allExist: false };
-
   const tables: { name: string; exists: boolean; count: number; err?: string }[] = [];
   let allExist = true;
-
-  for (const [, tbl] of Object.entries(TABLES)) {
-    const { data, error } = await client.from(tbl).select('id');
-    if (error) {
-      tables.push({ name: tbl, exists: false, count: 0, err: error.message?.substring(0, 80) });
-      allExist = false;
-    } else {
-      tables.push({ name: tbl, exists: true, count: data?.length ?? 0 });
+  for (const tbl of Object.values(TABLES)) {
+    try {
+      const res = await sb(cfg, `${tbl}?select=id`);
+      if (res.ok && Array.isArray(res.data)) {
+        tables.push({ name: tbl, exists: true, count: (res.data as unknown[]).length });
+      } else if (res.text.includes('does not exist')) {
+        tables.push({ name: tbl, exists: false, count: 0 }); allExist = false;
+      } else {
+        tables.push({ name: tbl, exists: false, count: 0, err: `${res.status}` }); allExist = false;
+      }
+    } catch (e) {
+      tables.push({ name: tbl, exists: false, count: 0, err: String(e).substring(0, 50) }); allExist = false;
     }
   }
   return { tables, allExist };
 }
 
-// aliases
 export const getTableInfo = checkTables;
-export async function autoSetupTables(cfg?: SupabaseConfig) {
-  const r = await checkTables(cfg || getSupabaseConfig()!);
-  return {
-    ...r, success: r.allExist,
-    message: r.allExist ? '✅ Semua tabel siap!' : '⚠️ Tabel belum lengkap',
-    details: r.tables.map(t => ({ table: t.name, status: t.exists ? `✅ ${t.count}` : `❌ ${t.err||''}` })),
-    needsManualSetup: !r.allExist, allTablesExist: r.allExist,
-  };
+
+export async function autoSetupTables(cfg: SupabaseConfig) {
+  const c = await checkTables(cfg);
+  return { ...c, success: c.allExist, message: c.allExist ? '✅ OK' : '⚠️ Missing',
+    details: c.tables.map(t => ({ table: t.name, status: t.exists ? `✅ ${t.count}` : `❌` })),
+    needsManualSetup: !c.allExist, allTablesExist: c.allExist };
 }
 
-// --- PUSH ---
+/* ─── Push ─── */
+
 export async function pushToSupabase(cfg: SupabaseConfig): Promise<{
   success: boolean; message: string;
   results: { table: string; status: string; count: number; error?: string }[];
 }> {
-  const client = getClient();
-  if (!client) return { success: false, message: '❌ Tidak terhubung', results: [] };
-
   const results: { table: string; status: string; count: number; error?: string }[] = [];
-  const order: TKey[] = ['regions','branches','users','suppliers','products','transactions','stock','demand_tests','notifications'];
-
-  for (const key of order) {
+  for (const key of ORDER) {
     const tbl = TABLES[key];
-    let items: unknown[] = [];
-    try { items = JSON.parse(localStorage.getItem(`smp_${key}`) || '[]'); } catch { items = []; }
-
+    let items: Record<string, unknown>[] = [];
+    try { items = JSON.parse(localStorage.getItem(`smp_${key}`) || '[]'); } catch { /* */ }
     if (!items.length) { results.push({ table: tbl, status: 'empty', count: 0 }); continue; }
 
-    // delete all
-    const { error: delErr } = await client.from(tbl).delete().neq('id', '____');
-    if (delErr) console.warn(`del ${tbl}:`, delErr.message);
-
+    // delete
+    await sb(cfg, `${tbl}?id=neq.____`, 'DELETE');
     // insert
-    const rows = (items as Record<string,unknown>[]).map(toSnake);
-    const { error: insErr } = await client.from(tbl).insert(rows);
-
-    if (insErr) {
-      console.error(`ins ${tbl}:`, insErr);
-      results.push({ table: tbl, status: 'error', count: 0, error: insErr.message?.substring(0, 100) });
-    } else {
+    const rows = items.map(toSnake);
+    const res = await sb(cfg, tbl, 'POST', rows);
+    if (res.ok || res.status === 201) {
       results.push({ table: tbl, status: 'ok', count: items.length });
+    } else {
+      results.push({ table: tbl, status: 'error', count: 0, error: res.text.substring(0, 120) });
     }
   }
-
-  const ok = results.filter(r => r.status === 'ok' || r.status === 'empty').length;
-  const n = results.filter(r => r.status === 'ok').reduce((s,r) => s + r.count, 0);
+  const ok = results.filter(x => x.status === 'ok' || x.status === 'empty').length;
+  const n = results.filter(x => x.status === 'ok').reduce((s, x) => s + x.count, 0);
   saveSupabaseConfig({ ...cfg, lastSync: new Date().toISOString() });
-  return { success: ok === order.length, message: ok === order.length ? `✅ ${n} data berhasil di-push!` : `⚠️ ${ok}/${order.length} OK`, results };
+  return { success: ok === ORDER.length, message: ok === ORDER.length ? `✅ ${n} data di-push!` : `⚠️ ${ok}/${ORDER.length}`, results };
 }
 
-// --- PULL ---
+/* ─── Pull ─── */
+
 export async function pullFromSupabase(cfg: SupabaseConfig): Promise<{
   success: boolean; message: string;
   results: { table: string; status: string; count: number; error?: string }[];
 }> {
-  const client = getClient();
-  if (!client) return { success: false, message: '❌ Tidak terhubung', results: [] };
-
   const results: { table: string; status: string; count: number; error?: string }[] = [];
-  const order: TKey[] = ['regions','branches','users','suppliers','products','transactions','stock','demand_tests','notifications'];
-
-  for (const key of order) {
+  for (const key of ORDER) {
     const tbl = TABLES[key];
-    const { data, error } = await client.from(tbl).select('*');
-    if (error) {
-      results.push({ table: tbl, status: 'error', count: 0, error: error.message?.substring(0, 100) });
-    } else if (data) {
-      const rows = data.map(d => toCamel(d as Record<string,unknown>));
+    const res = await sb(cfg, `${tbl}?select=*`);
+    if (res.ok && Array.isArray(res.data)) {
+      const rows = (res.data as Record<string, unknown>[]).map(toCamel);
       localStorage.setItem(`smp_${key}`, JSON.stringify(rows));
-      results.push({ table: tbl, status: 'ok', count: data.length });
+      results.push({ table: tbl, status: 'ok', count: (res.data as unknown[]).length });
+    } else {
+      results.push({ table: tbl, status: 'error', count: 0, error: res.text.substring(0, 80) });
     }
   }
-
-  const ok = results.filter(r => r.status === 'ok').length;
-  const n = results.reduce((s,r) => s + r.count, 0);
+  const ok = results.filter(x => x.status === 'ok').length;
+  const n = results.reduce((s, x) => s + x.count, 0);
   saveSupabaseConfig({ ...cfg, lastSync: new Date().toISOString() });
   return { success: ok > 0, message: ok > 0 ? `✅ ${n} data di-pull! Refresh halaman.` : '❌ Gagal pull', results };
 }
