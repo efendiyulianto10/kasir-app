@@ -4,17 +4,35 @@ import {
   Store, Users, ArrowUpRight, Target, Zap
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
-import { Branch, DailyTransaction, Supplier, DemandTest } from '../types';
+import { Branch, DailyTransaction, Supplier, DemandTest, Region, Product } from '../types';
 import { formatCurrency } from '../store';
+import { User } from '../auth';
+import AdminPanel from './AdminPanel';
 
 interface DashboardProps {
   branches: Branch[];
   transactions: DailyTransaction[];
   suppliers: Supplier[];
   demandTests: DemandTest[];
+  user?: User;
+  allBranches?: Branch[];
+  allRegions?: Region[];
+  allProducts?: Product[];
+  users?: User[];
+  onUpdateUsers?: (users: User[]) => void;
+  onUpdateBranches?: (branches: Branch[]) => void;
+  onUpdateRegions?: (regions: Region[]) => void;
+  onResetData?: () => void;
+  onExportData?: () => void;
+  onImportData?: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }
 
-export default function Dashboard({ branches, transactions, suppliers, demandTests }: DashboardProps) {
+export default function Dashboard({ 
+  branches, transactions, suppliers, demandTests, user,
+  allBranches, allRegions, allProducts, users,
+  onUpdateUsers, onUpdateBranches, onUpdateRegions,
+  onResetData, onExportData, onImportData
+}: DashboardProps) {
   const stats = useMemo(() => {
     const today = new Date().toISOString().split('T')[0];
     const todayTx = transactions.filter(t => t.date === today);
@@ -109,20 +127,47 @@ export default function Dashboard({ branches, transactions, suppliers, demandTes
 
   const COLORS = ['#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6'];
 
+  const isOwner = user?.role === 'owner';
+
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard Utama</h1>
-          <p className="text-gray-500 text-sm mt-1">Overview bisnis SMP — Kelola dari macro level 🎯</p>
+          <h1 className="text-2xl font-bold text-gray-900">
+            {isOwner ? '👑 Dashboard Owner' : '📊 Dashboard'}
+          </h1>
+          <p className="text-gray-500 text-sm mt-1">
+            {isOwner ? 'Kelola semua aspek bisnis SMP dari sini' : 
+             user?.role === 'manager_wilayah' ? `Overview wilayah Anda` :
+             user?.role === 'pic_cabang' ? `Overview cabang Anda` : 'Overview bisnis SMP'}
+          </p>
         </div>
-        <div className="flex items-center gap-2 bg-orange-50 px-4 py-2 rounded-xl border border-orange-200">
-          <Target size={18} className="text-orange-600" />
-          <span className="text-sm font-medium text-orange-800">Target: 100 Cabang</span>
-          <span className="text-xs bg-orange-600 text-white px-2 py-0.5 rounded-full">{branches.length}/100</span>
-        </div>
+        {isOwner && (
+          <div className="flex items-center gap-2 bg-purple-50 px-4 py-2 rounded-xl border border-purple-200">
+            <Target size={18} className="text-purple-600" />
+            <span className="text-sm font-medium text-purple-800">Target: 100 Cabang</span>
+            <span className="text-xs bg-purple-600 text-white px-2 py-0.5 rounded-full">{allBranches?.length || branches.length}/100</span>
+          </div>
+        )}
       </div>
+
+      {/* Admin Panel for Owner */}
+      {isOwner && users && allBranches && allRegions && allProducts && onUpdateUsers && onUpdateBranches && onUpdateRegions && onResetData && onExportData && onImportData && (
+        <AdminPanel
+          users={users}
+          branches={allBranches}
+          regions={allRegions}
+          suppliers={suppliers}
+          products={allProducts}
+          onUpdateUsers={onUpdateUsers}
+          onUpdateBranches={onUpdateBranches}
+          onUpdateRegions={onUpdateRegions}
+          onResetData={onResetData}
+          onExportData={onExportData}
+          onImportData={onImportData}
+        />
+      )}
 
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -268,63 +313,71 @@ export default function Dashboard({ branches, transactions, suppliers, demandTes
               </tr>
             </thead>
             <tbody>
-              {branchPerformance.map((b, i) => (
-                <tr key={i} className="border-b border-gray-50 hover:bg-orange-50/50 transition-colors">
-                  <td className="py-3">
-                    {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : <span className="text-gray-400">{i + 1}</span>}
-                  </td>
-                  <td className="py-3 font-medium text-gray-900">{b.name}</td>
-                  <td className="py-3 text-right">{b.items} pcs</td>
-                  <td className="py-3 text-right text-orange-600 font-medium">{formatCurrency(b.revenue)}</td>
-                  <td className="py-3 text-right text-green-600 font-medium">{formatCurrency(b.revenue * 0.1)}</td>
+              {branchPerformance.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-gray-400">Belum ada transaksi hari ini</td>
                 </tr>
-              ))}
+              ) : (
+                branchPerformance.map((b, i) => (
+                  <tr key={i} className="border-b border-gray-50 hover:bg-orange-50/50 transition-colors">
+                    <td className="py-3">
+                      {i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : <span className="text-gray-400">{i + 1}</span>}
+                    </td>
+                    <td className="py-3 font-medium text-gray-900">{b.name}</td>
+                    <td className="py-3 text-right">{b.items} pcs</td>
+                    <td className="py-3 text-right text-orange-600 font-medium">{formatCurrency(b.revenue)}</td>
+                    <td className="py-3 text-right text-green-600 font-medium">{formatCurrency(b.revenue * 0.1)}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Demand Testing Overview */}
-      <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm">
-        <h3 className="font-semibold text-gray-900 mb-4">🧪 Status Demand Testing</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {demandTests.map(dt => (
-            <div key={dt.id} className={`p-4 rounded-xl border-2 ${
-              dt.status === 'graduated' ? 'border-green-200 bg-green-50' :
-              dt.status === 'consistent' ? 'border-blue-200 bg-blue-50' :
-              dt.status === 'testing' ? 'border-yellow-200 bg-yellow-50' :
-              'border-red-200 bg-red-50'
-            }`}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-medium text-gray-900 text-sm">{dt.branchName}</span>
-                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                  dt.status === 'graduated' ? 'bg-green-200 text-green-800' :
-                  dt.status === 'consistent' ? 'bg-blue-200 text-blue-800' :
-                  dt.status === 'testing' ? 'bg-yellow-200 text-yellow-800' :
-                  'bg-red-200 text-red-800'
-                }`}>
-                  {dt.status === 'graduated' ? '✅ Lulus' : 
-                   dt.status === 'consistent' ? '📊 Konsisten' :
-                   dt.status === 'testing' ? '🧪 Testing' : '⚠️ Inkonsisten'}
-                </span>
+      {/* Demand Testing Overview - Only show if owner or has data */}
+      {demandTests.length > 0 && (
+        <div className="bg-white rounded-2xl p-5 border border-gray-100 shadow-sm">
+          <h3 className="font-semibold text-gray-900 mb-4">🧪 Status Demand Testing</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+            {demandTests.slice(0, 6).map(dt => (
+              <div key={dt.id} className={`p-4 rounded-xl border-2 ${
+                dt.status === 'graduated' ? 'border-green-200 bg-green-50' :
+                dt.status === 'consistent' ? 'border-blue-200 bg-blue-50' :
+                dt.status === 'testing' ? 'border-yellow-200 bg-yellow-50' :
+                'border-red-200 bg-red-50'
+              }`}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="font-medium text-gray-900 text-sm">{dt.branchName}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                    dt.status === 'graduated' ? 'bg-green-200 text-green-800' :
+                    dt.status === 'consistent' ? 'bg-blue-200 text-blue-800' :
+                    dt.status === 'testing' ? 'bg-yellow-200 text-yellow-800' :
+                    'bg-red-200 text-red-800'
+                  }`}>
+                    {dt.status === 'graduated' ? '✅ Lulus' : 
+                     dt.status === 'consistent' ? '📊 Konsisten' :
+                     dt.status === 'testing' ? '🧪 Testing' : '⚠️ Inkonsisten'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs text-gray-600">
+                  <span>Konsistensi: <b className="text-gray-900">{dt.consistency}%</b></span>
+                  <span>Avg: <b className="text-gray-900">{dt.avgDailySales} pcs/hari</b></span>
+                </div>
+                <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
+                  <div 
+                    className={`h-1.5 rounded-full ${
+                      dt.consistency >= 80 ? 'bg-green-500' :
+                      dt.consistency >= 60 ? 'bg-yellow-500' : 'bg-red-500'
+                    }`}
+                    style={{ width: `${dt.consistency}%` }}
+                  />
+                </div>
               </div>
-              <div className="flex items-center justify-between text-xs text-gray-600">
-                <span>Konsistensi: <b className="text-gray-900">{dt.consistency}%</b></span>
-                <span>Avg: <b className="text-gray-900">{dt.avgDailySales} pcs/hari</b></span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-1.5 mt-2">
-                <div 
-                  className={`h-1.5 rounded-full ${
-                    dt.consistency >= 80 ? 'bg-green-500' :
-                    dt.consistency >= 60 ? 'bg-yellow-500' : 'bg-red-500'
-                  }`}
-                  style={{ width: `${dt.consistency}%` }}
-                />
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

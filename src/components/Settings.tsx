@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import { Settings as SettingsIcon, RefreshCw, Download, Upload, AlertTriangle, Check, Info } from 'lucide-react';
+import { Settings as SettingsIcon, RefreshCw, Download, Upload, AlertTriangle, Check, Info, ChevronRight } from 'lucide-react';
 
 export default function Settings() {
   const [showConfirmReset, setShowConfirmReset] = useState(false);
   const [exported, setExported] = useState(false);
 
   const exportAllData = () => {
-    const keys = ['regions', 'branches', 'suppliers', 'products', 'transactions', 'stock', 'demand_tests', 'notifications'];
+    const keys = ['regions', 'branches', 'suppliers', 'products', 'transactions', 'stock', 'demand_tests', 'notifications', 'users'];
     const data: Record<string, unknown> = {};
     keys.forEach(key => {
       const val = localStorage.getItem(`smp_${key}`);
@@ -42,7 +42,7 @@ export default function Settings() {
   };
 
   const resetAllData = () => {
-    const keys = ['regions', 'branches', 'suppliers', 'products', 'transactions', 'stock', 'demand_tests', 'notifications'];
+    const keys = ['regions', 'branches', 'suppliers', 'products', 'transactions', 'stock', 'demand_tests', 'notifications', 'users', 'current_user'];
     keys.forEach(key => localStorage.removeItem(`smp_${key}`));
     window.location.reload();
   };
@@ -59,32 +59,30 @@ export default function Settings() {
         <h3 className="font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <Info size={18} className="text-orange-600" /> Informasi Bisnis
         </h3>
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div className="bg-orange-50 rounded-xl p-3">
-              <div className="text-gray-500 text-xs">Nama Bisnis</div>
-              <div className="font-bold text-gray-900">SMP - Sarapan Murah Pagi</div>
-            </div>
-            <div className="bg-orange-50 rounded-xl p-3">
-              <div className="text-gray-500 text-xs">Model Bisnis</div>
-              <div className="font-bold text-gray-900">Konsinyasi (Titip Jual)</div>
-            </div>
-            <div className="bg-green-50 rounded-xl p-3">
-              <div className="text-gray-500 text-xs">Harga Jual</div>
-              <div className="font-bold text-green-700">Serba Rp 10.000</div>
-            </div>
-            <div className="bg-green-50 rounded-xl p-3">
-              <div className="text-gray-500 text-xs">Margin Profit</div>
-              <div className="font-bold text-green-700">10% = Rp 1.000/pcs</div>
-            </div>
-            <div className="bg-blue-50 rounded-xl p-3">
-              <div className="text-gray-500 text-xs">Target Cabang</div>
-              <div className="font-bold text-blue-700">100 Cabang</div>
-            </div>
-            <div className="bg-blue-50 rounded-xl p-3">
-              <div className="text-gray-500 text-xs">Management Style</div>
-              <div className="font-bold text-blue-700">Macro Level ☁️</div>
-            </div>
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div className="bg-orange-50 rounded-xl p-3">
+            <div className="text-gray-500 text-xs">Nama Bisnis</div>
+            <div className="font-bold text-gray-900">SMP - Sarapan Murah Pagi</div>
+          </div>
+          <div className="bg-orange-50 rounded-xl p-3">
+            <div className="text-gray-500 text-xs">Model Bisnis</div>
+            <div className="font-bold text-gray-900">Konsinyasi (Titip Jual)</div>
+          </div>
+          <div className="bg-green-50 rounded-xl p-3">
+            <div className="text-gray-500 text-xs">Harga Jual</div>
+            <div className="font-bold text-green-700">Serba Rp 10.000</div>
+          </div>
+          <div className="bg-green-50 rounded-xl p-3">
+            <div className="text-gray-500 text-xs">Margin Profit</div>
+            <div className="font-bold text-green-700">10% = Rp 1.000/pcs</div>
+          </div>
+          <div className="bg-blue-50 rounded-xl p-3">
+            <div className="text-gray-500 text-xs">Target Cabang</div>
+            <div className="font-bold text-blue-700">100 Cabang</div>
+          </div>
+          <div className="bg-blue-50 rounded-xl p-3">
+            <div className="text-gray-500 text-xs">Management Style</div>
+            <div className="font-bold text-blue-700">Macro Level ☁️</div>
           </div>
         </div>
       </div>
@@ -131,31 +129,33 @@ export default function Settings() {
         </h3>
         <div className="space-y-3">
           <button onClick={exportAllData}
-            className="w-full flex items-center gap-3 p-3 bg-blue-50 rounded-xl border border-blue-200 hover:bg-blue-100 transition-all text-left">
+            className="w-full flex items-center gap-3 p-4 bg-blue-50 rounded-xl border border-blue-200 hover:bg-blue-100 transition-all text-left">
             <Download size={20} className="text-blue-600" />
-            <div>
+            <div className="flex-1">
               <div className="font-medium text-gray-900 text-sm">Export Backup Data</div>
               <div className="text-xs text-gray-500">Download semua data sebagai file JSON</div>
             </div>
-            {exported && <Check size={18} className="text-green-600 ml-auto" />}
+            {exported ? <Check size={18} className="text-green-600" /> : <ChevronRight size={18} className="text-gray-400" />}
           </button>
 
-          <label className="w-full flex items-center gap-3 p-3 bg-green-50 rounded-xl border border-green-200 hover:bg-green-100 transition-all cursor-pointer">
+          <label className="w-full flex items-center gap-3 p-4 bg-green-50 rounded-xl border border-green-200 hover:bg-green-100 transition-all cursor-pointer text-left">
             <Upload size={20} className="text-green-600" />
-            <div>
+            <div className="flex-1">
               <div className="font-medium text-gray-900 text-sm">Import Data</div>
               <div className="text-xs text-gray-500">Restore dari file backup JSON</div>
             </div>
+            <ChevronRight size={18} className="text-gray-400" />
             <input type="file" accept=".json" onChange={importData} className="hidden" />
           </label>
 
           <button onClick={() => setShowConfirmReset(true)}
-            className="w-full flex items-center gap-3 p-3 bg-red-50 rounded-xl border border-red-200 hover:bg-red-100 transition-all text-left">
+            className="w-full flex items-center gap-3 p-4 bg-red-50 rounded-xl border border-red-200 hover:bg-red-100 transition-all text-left">
             <RefreshCw size={20} className="text-red-600" />
-            <div>
-              <div className="font-medium text-red-900 text-sm">Reset Data Demo</div>
-              <div className="text-xs text-red-500">Kembalikan ke data awal (demo)</div>
+            <div className="flex-1">
+              <div className="font-medium text-red-900 text-sm">Reset Semua Data</div>
+              <div className="text-xs text-red-500">Kembalikan ke data awal (demo) + logout</div>
             </div>
+            <ChevronRight size={18} className="text-gray-400" />
           </button>
         </div>
       </div>
@@ -165,15 +165,15 @@ export default function Settings() {
         <span className="text-5xl">🍳</span>
         <h2 className="text-2xl font-bold mt-3">SMP Management System</h2>
         <p className="text-orange-100 mt-1">Sarapan Murah Pagi — Serba 10 Ribu</p>
-        <div className="mt-4 space-y-1 text-sm text-orange-200">
+        <div className="mt-4 grid grid-cols-2 gap-2 text-sm text-orange-200">
           <p>📊 Dashboard & Analytics</p>
-          <p>⚡ Kasir Express untuk jam sibuk</p>
-          <p>🧪 Demand Testing & Konsistensi</p>
-          <p>📦 Stok & Retur Management</p>
-          <p>💬 WhatsApp Notifications</p>
-          <p>🎯 Target 100 Cabang</p>
+          <p>⚡ Kasir Express</p>
+          <p>🔐 Multi-user Access</p>
+          <p>🧪 Demand Testing</p>
+          <p>📦 Stok & Retur</p>
+          <p>💬 WhatsApp Notif</p>
         </div>
-        <div className="mt-4 text-xs text-orange-300">v1.0 — Built for scale 🚀</div>
+        <div className="mt-4 text-xs text-orange-300">v2.0 — Built for scale 🚀</div>
       </div>
 
       {/* Reset Confirm Modal */}
@@ -183,7 +183,7 @@ export default function Settings() {
             <div className="text-center">
               <AlertTriangle size={48} className="text-red-500 mx-auto mb-3" />
               <h2 className="text-lg font-bold text-gray-900">Reset Semua Data?</h2>
-              <p className="text-sm text-gray-500 mt-2">Semua data akan dikembalikan ke data demo awal. Pastikan sudah export backup!</p>
+              <p className="text-sm text-gray-500 mt-2">Semua data akan dikembalikan ke data demo awal dan Anda akan logout. Pastikan sudah export backup!</p>
               <div className="flex gap-3 mt-4">
                 <button onClick={() => setShowConfirmReset(false)}
                   className="flex-1 py-2.5 bg-gray-100 text-gray-600 rounded-xl font-medium text-sm hover:bg-gray-200">Batal</button>
