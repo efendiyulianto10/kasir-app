@@ -10,7 +10,7 @@ import { Branch, Region, Supplier, Product } from '../types';
 import { generateId } from '../store';
 import { 
   SupabaseConfig, getSupabaseConfig, saveSupabaseConfig, clearSupabaseConfig,
-  testConnection, pushToSupabase, pullFromSupabase, autoSetupTables, generateFullSetupSQL, getTableInfo
+  testConnection, pushToSupabase, pullFromSupabase, generateFullSetupSQL, getTableInfo
 } from '../supabase';
 
 interface AdminPanelProps {
@@ -57,6 +57,7 @@ export default function AdminPanel({
   const [sqlCopied, setSqlCopied] = useState(false);
   const [tableStatus, setTableStatus] = useState<{ name: string; exists: boolean; count: number }[]>([]);
   const [setupSQL, setSetupSQL] = useState('');
+  const [debugLog, setDebugLog] = useState('');
 
   // Forms
   const [userForm, setUserForm] = useState<Partial<User>>({
@@ -92,34 +93,35 @@ export default function AdminPanel({
     }
 
     setIsTesting(true);
-    setSyncMessage({ type: 'info', text: 'Menghubungkan ke Supabase...' });
+    setDebugLog('');
+    setSyncMessage({ type: 'info', text: '⏳ Menghubungkan...' });
 
     const result = await testConnection(supabaseUrl, supabaseKey);
+    setDebugLog(result.debug || '');
     
     if (result.success) {
+      // Simpan config — strip whitespace
       const config: SupabaseConfig = {
-        url: supabaseUrl,
-        anonKey: supabaseKey,
+        url: supabaseUrl.replace(/\s+/g, ''),
+        anonKey: supabaseKey.replace(/\s+/g, ''),
         enabled: true,
       };
       saveSupabaseConfig(config);
       setSupabaseConfig(config);
       
-      // Auto check tables after successful connection
+      // Auto check tables
       setSyncMessage({ type: 'info', text: '✅ Terhubung! Mengecek tabel...' });
-      const tableCheck = await autoSetupTables(config);
       const tableInfo = await getTableInfo(config);
       setTableStatus(tableInfo.tables);
       
-      if (tableCheck.allTablesExist) {
-        setSyncMessage({ type: 'success', text: '✅ Koneksi berhasil! Semua tabel siap.' });
+      if (tableInfo.allExist) {
+        setSyncMessage({ type: 'success', text: '✅ Koneksi berhasil & semua tabel siap!' });
       } else {
         setSetupSQL(generateFullSetupSQL());
-        setSyncMessage({ type: 'error', text: '✅ Terhubung, tapi tabel belum lengkap. Jalankan SQL Setup.' });
+        setSyncMessage({ type: 'error', text: '✅ Terhubung! Tapi tabel belum lengkap.\nKlik "Lihat & Copy SQL" lalu jalankan di Supabase SQL Editor.' });
       }
     } else {
-      const hint = (result as { hint?: string }).hint;
-      setSyncMessage({ type: 'error', text: result.message + (hint ? `\n\n💡 ${hint}` : '') });
+      setSyncMessage({ type: 'error', text: result.message });
     }
 
     setIsTesting(false);
@@ -138,7 +140,7 @@ export default function AdminPanel({
     
     // Show detailed results
     const details = result.results
-      .map(r => `${r.status === 'success' ? '✅' : r.status === 'empty' ? '⏭️' : '❌'} ${r.table}: ${r.count}`)
+      .map(r => `${r.status === 'ok' ? '✅' : r.status === 'empty' ? '⏭️' : '❌'} ${r.table}: ${r.count}${r.error ? ' — '+r.error : ''}`)
       .join('\n');
     
     setSyncMessage({ 
@@ -173,7 +175,7 @@ export default function AdminPanel({
     
     // Show detailed results
     const details = result.results
-      .map(r => `${r.status === 'success' ? '✅' : r.status === 'no_table' ? '⚠️' : '❌'} ${r.table}: ${r.count}`)
+      .map(r => `${r.status === 'ok' ? '✅' : r.status === 'no_table' ? '⚠️' : '❌'} ${r.table}: ${r.count}${r.error ? ' — '+r.error : ''}`)
       .join('\n');
     
     setSyncMessage({ 
@@ -209,18 +211,16 @@ export default function AdminPanel({
     if (!supabaseConfig) return;
     
     setIsCheckingTables(true);
-    setSyncMessage({ type: 'info', text: 'Mengecek tabel di Supabase...' });
+    setSyncMessage({ type: 'info', text: '⏳ Mengecek tabel...' });
     
-    const result = await autoSetupTables(supabaseConfig);
     const info = await getTableInfo(supabaseConfig);
     setTableStatus(info.tables);
     
-    if (result.needsManualSetup) {
-      setSetupSQL(generateFullSetupSQL());
-      setSyncMessage({ type: 'error', text: result.message });
+    if (info.allExist) {
+      setSyncMessage({ type: 'success', text: '✅ Semua tabel siap!' });
     } else {
-      setSyncMessage({ type: 'success', text: result.message });
-      setSupabaseConfig(getSupabaseConfig());
+      setSetupSQL(generateFullSetupSQL());
+      setSyncMessage({ type: 'error', text: '⚠️ Tabel belum lengkap. Jalankan SQL Setup.' });
     }
     
     setIsCheckingTables(false);
@@ -553,6 +553,14 @@ export default function AdminPanel({
               </div>
             )}
 
+            {/* Debug Log */}
+            {debugLog && (
+              <details className="bg-gray-900 rounded-xl overflow-hidden">
+                <summary className="px-4 py-2 text-xs text-gray-400 cursor-pointer hover:text-gray-200">🔍 Debug Info (klik untuk buka)</summary>
+                <pre className="px-4 pb-3 text-xs text-green-400 whitespace-pre-wrap overflow-x-auto">{debugLog}</pre>
+              </details>
+            )}
+
             {/* Configuration Form */}
             <div className="bg-white rounded-xl border border-gray-200 p-4 space-y-4">
               <h4 className="font-medium text-gray-900 flex items-center gap-2">
@@ -584,14 +592,13 @@ export default function AdminPanel({
 
               <div>
                 <label className="text-sm font-medium text-gray-700">API Key (anon public)</label>
-                <input
-                  type="text"
+                <textarea
                   value={supabaseKey}
-                  onChange={e => setSupabaseKey(e.target.value)}
-                  className="w-full mt-1 p-3 border rounded-xl text-sm focus:ring-2 focus:ring-purple-500 font-mono text-xs"
+                  onChange={e => setSupabaseKey(e.target.value.trim())}
+                  className="w-full mt-1 p-3 border rounded-xl text-sm focus:ring-2 focus:ring-purple-500 font-mono text-xs h-20"
                   placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                 />
-                <p className="text-xs text-gray-400 mt-1">⚠️ Gunakan <b>anon public</b> key, BUKAN service_role key</p>
+                <p className="text-xs text-gray-400 mt-1">⚠️ Gunakan <b>anon public</b> key (yang panjang), BUKAN service_role</p>
               </div>
 
               <button
@@ -622,12 +629,12 @@ export default function AdminPanel({
                 </div>
 
                 {tableStatus.length > 0 && (
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 gap-1">
                     {tableStatus.map(t => (
                       <div key={t.name} className={`flex items-center justify-between p-2 rounded-lg text-xs ${t.exists ? 'bg-green-50' : 'bg-red-50'}`}>
-                        <span className={t.exists ? 'text-green-700' : 'text-red-700'}>{t.name}</span>
+                        <span className={`font-mono ${t.exists ? 'text-green-700' : 'text-red-700'}`}>{t.name}</span>
                         <span className={`font-medium ${t.exists ? 'text-green-600' : 'text-red-600'}`}>
-                          {t.exists ? `✅ ${t.count} rows` : '❌ Belum ada'}
+                          {t.exists ? `✅ ${t.count} rows` : `❌ ${'err' in t && (t as Record<string,unknown>).err ? (t as Record<string,unknown>).err : 'Missing'}`}
                         </span>
                       </div>
                     ))}
