@@ -184,7 +184,7 @@ export default function AdminPanel({
     setTableStatus(info.tables);
     
     if (result.needsManualSetup) {
-      setSetupSQL(result.manualSQL);
+      setSetupSQL(generateFullSetupSQL());
       setSyncMessage({ type: 'error', text: result.message });
     } else {
       setSyncMessage({ type: 'success', text: result.message });

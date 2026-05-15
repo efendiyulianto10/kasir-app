@@ -29,7 +29,7 @@ export function clearSupabaseConfig(): void {
 function cleanSupabaseUrl(url: string): string {
   let cleaned = url.trim();
   // Remove trailing slash
-  if (cleaned.endsWith('/')) {
+  while (cleaned.endsWith('/')) {
     cleaned = cleaned.slice(0, -1);
   }
   // Ensure https
@@ -39,27 +39,30 @@ function cleanSupabaseUrl(url: string): string {
   return cleaned;
 }
 
-// Headers for Supabase requests
-function getHeaders(anonKey: string, preferHeader?: string) {
-  const headers: Record<string, string> = {
-    'apikey': anonKey,
-    'Authorization': `Bearer ${anonKey}`,
-    'Content-Type': 'application/json',
-  };
-  if (preferHeader) {
-    headers['Prefer'] = preferHeader;
-  }
-  return headers;
-}
-
 // Test connection to Supabase
 export async function testConnection(url: string, anonKey: string): Promise<{ success: boolean; message: string }> {
   try {
     const cleanUrl = cleanSupabaseUrl(url);
     
-    // Test with a simple health check - try to access the REST API root
-    // This endpoint returns OpenAPI spec and is always accessible with valid credentials
-    const response = await fetch(`${cleanUrl}/rest/v1/`, {
+    // Validate URL format
+    if (!cleanUrl.includes('.supabase.co')) {
+      return { 
+        success: false, 
+        message: '❌ URL tidak valid. Format harus: https://[project-ref].supabase.co' 
+      };
+    }
+
+    // Validate API key format (JWT)
+    if (!anonKey.startsWith('eyJ')) {
+      return { 
+        success: false, 
+        message: '❌ API Key tidak valid. Key harus dimulai dengan "eyJ..."' 
+      };
+    }
+
+    // Try to access the REST API - we'll try to query a non-existent table
+    // This will return 404 if connected (table doesn't exist) or 401 if not authorized
+    const response = await fetch(`${cleanUrl}/rest/v1/smp_connection_test?select=*&limit=1`, {
       method: 'GET',
       headers: {
         'apikey': anonKey,
@@ -67,27 +70,43 @@ export async function testConnection(url: string, anonKey: string): Promise<{ su
       },
     });
     
-    // 200 = success, we got the OpenAPI spec
-    // 401 = unauthorized (bad API key)
-    // 404 = might be wrong URL format
+    // 200 = table exists (great!)
+    // 404 or response with "relation does not exist" = connected but table doesn't exist (still good!)
+    // 401/403 = authentication failed
     
-    if (response.ok || response.status === 200) {
-      return { success: true, message: '✅ Koneksi berhasil! Supabase siap digunakan.' };
-    } else if (response.status === 401 || response.status === 403) {
-      return { success: false, message: '❌ API Key tidak valid atau tidak memiliki akses. Pastikan menggunakan "anon public" key.' };
-    } else if (response.status === 404) {
-      return { success: false, message: '❌ URL tidak valid. Pastikan format: https://xxxxx.supabase.co' };
-    } else {
-      const text = await response.text();
-      return { success: false, message: `❌ Error ${response.status}: ${text.substring(0, 100)}` };
+    if (response.status === 200) {
+      return { success: true, message: '✅ Koneksi berhasil!' };
     }
+    
+    if (response.status === 401 || response.status === 403) {
+      return { 
+        success: false, 
+        message: '❌ API Key ditolak. Pastikan:\n• Menggunakan "anon public" key\n• Key di-copy dengan lengkap\n• Project Supabase masih aktif' 
+      };
+    }
+    
+    // Check response body for more info
+    const text = await response.text();
+    
+    // If it says relation doesn't exist, that's fine - it means we're connected!
+    if (text.includes('does not exist') || text.includes('relation') || response.status === 404) {
+      return { success: true, message: '✅ Koneksi berhasil! Tabel belum dibuat.' };
+    }
+    
+    // Any other response, consider it a success if not 4xx/5xx auth error
+    if (response.status >= 200 && response.status < 400) {
+      return { success: true, message: '✅ Koneksi berhasil!' };
+    }
+
+    return { success: false, message: `❌ Error ${response.status}: ${text.substring(0, 100)}` };
+    
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
     
-    if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError')) {
+    if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError') || errorMsg.includes('TypeError')) {
       return { 
         success: false, 
-        message: '❌ Tidak bisa terhubung. Periksa:\n• URL sudah benar (https://xxxxx.supabase.co)\n• Koneksi internet stabil\n• Project Supabase aktif' 
+        message: '❌ Tidak bisa terhubung ke server.\n\nKemungkinan penyebab:\n• URL salah\n• Tidak ada koneksi internet\n• Project Supabase tidak aktif/paused' 
       };
     }
     
@@ -100,304 +119,147 @@ const tableDefinitions = [
   {
     name: 'smp_users',
     sql: `
-      CREATE TABLE IF NOT EXISTS smp_users (
-        id TEXT PRIMARY KEY,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        name TEXT NOT NULL,
-        role TEXT NOT NULL CHECK (role IN ('owner', 'manager_wilayah', 'pic_cabang', 'kasir')),
-        region_id TEXT,
-        branch_id TEXT,
-        phone TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `
+CREATE TABLE IF NOT EXISTS smp_users (
+  id TEXT PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'manager_wilayah', 'pic_cabang', 'kasir')),
+  region_id TEXT,
+  branch_id TEXT,
+  phone TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`
   },
   {
     name: 'smp_regions',
     sql: `
-      CREATE TABLE IF NOT EXISTS smp_regions (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        manager_id TEXT,
-        manager_name TEXT,
-        manager_phone TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `
+CREATE TABLE IF NOT EXISTS smp_regions (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  manager_id TEXT,
+  manager_name TEXT,
+  manager_phone TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`
   },
   {
     name: 'smp_branches',
     sql: `
-      CREATE TABLE IF NOT EXISTS smp_branches (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        address TEXT,
-        region_id TEXT REFERENCES smp_regions(id) ON DELETE SET NULL,
-        status TEXT DEFAULT 'testing' CHECK (status IN ('active', 'testing', 'closed')),
-        open_date DATE,
-        pic_name TEXT,
-        pic_phone TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `
+CREATE TABLE IF NOT EXISTS smp_branches (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  address TEXT,
+  region_id TEXT,
+  status TEXT DEFAULT 'testing' CHECK (status IN ('active', 'testing', 'closed')),
+  open_date TEXT,
+  pic_name TEXT,
+  pic_phone TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`
   },
   {
     name: 'smp_suppliers',
     sql: `
-      CREATE TABLE IF NOT EXISTS smp_suppliers (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        phone TEXT,
-        address TEXT,
-        branch_id TEXT REFERENCES smp_branches(id) ON DELETE SET NULL,
-        products JSONB DEFAULT '[]',
-        rating NUMERIC DEFAULT 5,
-        status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `
+CREATE TABLE IF NOT EXISTS smp_suppliers (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  phone TEXT,
+  address TEXT,
+  branch_id TEXT,
+  products JSONB DEFAULT '[]',
+  rating NUMERIC DEFAULT 5,
+  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`
   },
   {
     name: 'smp_products',
     sql: `
-      CREATE TABLE IF NOT EXISTS smp_products (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        category TEXT CHECK (category IN ('makanan', 'minuman', 'snack')),
-        supplier_id TEXT REFERENCES smp_suppliers(id) ON DELETE SET NULL,
-        supplier_name TEXT,
-        branch_id TEXT REFERENCES smp_branches(id) ON DELETE SET NULL,
-        price INTEGER DEFAULT 10000,
-        cost_price INTEGER DEFAULT 9000,
-        profit INTEGER DEFAULT 1000,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `
+CREATE TABLE IF NOT EXISTS smp_products (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  category TEXT CHECK (category IN ('makanan', 'minuman', 'snack')),
+  supplier_id TEXT,
+  supplier_name TEXT,
+  branch_id TEXT,
+  price INTEGER DEFAULT 10000,
+  cost_price INTEGER DEFAULT 9000,
+  profit INTEGER DEFAULT 1000,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`
   },
   {
     name: 'smp_transactions',
     sql: `
-      CREATE TABLE IF NOT EXISTS smp_transactions (
-        id TEXT PRIMARY KEY,
-        branch_id TEXT REFERENCES smp_branches(id) ON DELETE SET NULL,
-        date DATE NOT NULL,
-        items JSONB NOT NULL DEFAULT '[]',
-        payment_method TEXT CHECK (payment_method IN ('cash', 'qris', 'shopeefood', 'gofood')),
-        total_amount INTEGER DEFAULT 0,
-        total_profit INTEGER DEFAULT 0,
-        input_by TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `
+CREATE TABLE IF NOT EXISTS smp_transactions (
+  id TEXT PRIMARY KEY,
+  branch_id TEXT,
+  date TEXT NOT NULL,
+  items JSONB NOT NULL DEFAULT '[]',
+  payment_method TEXT CHECK (payment_method IN ('cash', 'qris', 'shopeefood', 'gofood')),
+  total_amount INTEGER DEFAULT 0,
+  total_profit INTEGER DEFAULT 0,
+  input_by TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`
   },
   {
     name: 'smp_stock',
     sql: `
-      CREATE TABLE IF NOT EXISTS smp_stock (
-        id TEXT PRIMARY KEY,
-        branch_id TEXT REFERENCES smp_branches(id) ON DELETE SET NULL,
-        date DATE NOT NULL,
-        supplier_id TEXT,
-        supplier_name TEXT,
-        product_id TEXT,
-        product_name TEXT,
-        qty_received INTEGER DEFAULT 0,
-        qty_sold INTEGER DEFAULT 0,
-        qty_returned INTEGER DEFAULT 0,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `
+CREATE TABLE IF NOT EXISTS smp_stock (
+  id TEXT PRIMARY KEY,
+  branch_id TEXT,
+  date TEXT NOT NULL,
+  supplier_id TEXT,
+  supplier_name TEXT,
+  product_id TEXT,
+  product_name TEXT,
+  qty_received INTEGER DEFAULT 0,
+  qty_sold INTEGER DEFAULT 0,
+  qty_returned INTEGER DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`
   },
   {
     name: 'smp_demand_tests',
     sql: `
-      CREATE TABLE IF NOT EXISTS smp_demand_tests (
-        id TEXT PRIMARY KEY,
-        branch_id TEXT REFERENCES smp_branches(id) ON DELETE SET NULL,
-        branch_name TEXT,
-        start_date DATE,
-        end_date DATE,
-        total_days INTEGER DEFAULT 0,
-        avg_daily_sales INTEGER DEFAULT 0,
-        avg_daily_revenue INTEGER DEFAULT 0,
-        avg_daily_profit INTEGER DEFAULT 0,
-        consistency INTEGER DEFAULT 0,
-        status TEXT DEFAULT 'testing' CHECK (status IN ('testing', 'consistent', 'inconsistent', 'graduated')),
-        notes TEXT,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `
+CREATE TABLE IF NOT EXISTS smp_demand_tests (
+  id TEXT PRIMARY KEY,
+  branch_id TEXT,
+  branch_name TEXT,
+  start_date TEXT,
+  end_date TEXT,
+  total_days INTEGER DEFAULT 0,
+  avg_daily_sales INTEGER DEFAULT 0,
+  avg_daily_revenue INTEGER DEFAULT 0,
+  avg_daily_profit INTEGER DEFAULT 0,
+  consistency INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'testing' CHECK (status IN ('testing', 'consistent', 'inconsistent', 'graduated')),
+  notes TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`
   },
   {
     name: 'smp_notifications',
     sql: `
-      CREATE TABLE IF NOT EXISTS smp_notifications (
-        id TEXT PRIMARY KEY,
-        type TEXT CHECK (type IN ('sales_report', 'stock_alert', 'return_alert', 'milestone')),
-        message TEXT,
-        branch_id TEXT,
-        phone TEXT,
-        sent BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `
-  },
-  {
-    name: 'smp_sync_meta',
-    sql: `
-      CREATE TABLE IF NOT EXISTS smp_sync_meta (
-        id TEXT PRIMARY KEY DEFAULT 'main',
-        last_sync TIMESTAMP WITH TIME ZONE,
-        sync_version INTEGER DEFAULT 1,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `
+CREATE TABLE IF NOT EXISTS smp_notifications (
+  id TEXT PRIMARY KEY,
+  type TEXT CHECK (type IN ('sales_report', 'stock_alert', 'return_alert', 'milestone')),
+  message TEXT,
+  branch_id TEXT,
+  phone TEXT,
+  sent BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);`
   }
 ];
-
-// RLS Policies SQL
-const rlsPoliciesSQL = `
--- Enable RLS on all tables
-ALTER TABLE smp_users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE smp_regions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE smp_branches ENABLE ROW LEVEL SECURITY;
-ALTER TABLE smp_suppliers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE smp_products ENABLE ROW LEVEL SECURITY;
-ALTER TABLE smp_transactions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE smp_stock ENABLE ROW LEVEL SECURITY;
-ALTER TABLE smp_demand_tests ENABLE ROW LEVEL SECURITY;
-ALTER TABLE smp_notifications ENABLE ROW LEVEL SECURITY;
-ALTER TABLE smp_sync_meta ENABLE ROW LEVEL SECURITY;
-
--- Create policies for public access (using anon key)
-DO $$ 
-BEGIN
-  -- smp_users policies
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'smp_users' AND policyname = 'Allow all access to smp_users') THEN
-    CREATE POLICY "Allow all access to smp_users" ON smp_users FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  
-  -- smp_regions policies
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'smp_regions' AND policyname = 'Allow all access to smp_regions') THEN
-    CREATE POLICY "Allow all access to smp_regions" ON smp_regions FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  
-  -- smp_branches policies
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'smp_branches' AND policyname = 'Allow all access to smp_branches') THEN
-    CREATE POLICY "Allow all access to smp_branches" ON smp_branches FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  
-  -- smp_suppliers policies
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'smp_suppliers' AND policyname = 'Allow all access to smp_suppliers') THEN
-    CREATE POLICY "Allow all access to smp_suppliers" ON smp_suppliers FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  
-  -- smp_products policies
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'smp_products' AND policyname = 'Allow all access to smp_products') THEN
-    CREATE POLICY "Allow all access to smp_products" ON smp_products FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  
-  -- smp_transactions policies
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'smp_transactions' AND policyname = 'Allow all access to smp_transactions') THEN
-    CREATE POLICY "Allow all access to smp_transactions" ON smp_transactions FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  
-  -- smp_stock policies
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'smp_stock' AND policyname = 'Allow all access to smp_stock') THEN
-    CREATE POLICY "Allow all access to smp_stock" ON smp_stock FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  
-  -- smp_demand_tests policies
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'smp_demand_tests' AND policyname = 'Allow all access to smp_demand_tests') THEN
-    CREATE POLICY "Allow all access to smp_demand_tests" ON smp_demand_tests FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  
-  -- smp_notifications policies
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'smp_notifications' AND policyname = 'Allow all access to smp_notifications') THEN
-    CREATE POLICY "Allow all access to smp_notifications" ON smp_notifications FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-  
-  -- smp_sync_meta policies
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = 'smp_sync_meta' AND policyname = 'Allow all access to smp_sync_meta') THEN
-    CREATE POLICY "Allow all access to smp_sync_meta" ON smp_sync_meta FOR ALL USING (true) WITH CHECK (true);
-  END IF;
-END $$;
-`;
-
-// Check if a table exists
-async function tableExists(config: SupabaseConfig, tableName: string): Promise<boolean> {
-  try {
-    const cleanUrl = cleanSupabaseUrl(config.url);
-    const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=id&limit=1`, {
-      method: 'GET',
-      headers: getHeaders(config.anonKey),
-    });
-    // 200 = table exists, 404 or 400 with "relation does not exist" = table doesn't exist
-    return response.ok;
-  } catch {
-    return false;
-  }
-}
-
-
-
-// Auto-setup all tables
-export async function autoSetupTables(config: SupabaseConfig): Promise<{ 
-  success: boolean; 
-  message: string; 
-  details: { table: string; status: string }[];
-  needsManualSetup: boolean;
-  manualSQL: string;
-}> {
-  const details: { table: string; status: string }[] = [];
-  let allExist = true;
-  
-  // Check which tables exist
-  for (const table of tableDefinitions) {
-    const exists = await tableExists(config, table.name);
-    details.push({
-      table: table.name,
-      status: exists ? '✅ Sudah ada' : '❌ Belum ada'
-    });
-    if (!exists) allExist = false;
-  }
-  
-  if (allExist) {
-    const updatedConfig = { ...config, tablesCreated: true };
-    saveSupabaseConfig(updatedConfig);
-    return {
-      success: true,
-      message: 'Semua tabel sudah tersedia di Supabase!',
-      details,
-      needsManualSetup: false,
-      manualSQL: ''
-    };
-  }
-  
-  // Generate SQL for manual setup
-  const manualSQL = generateFullSetupSQL();
-  
-  return {
-    success: false,
-    message: 'Beberapa tabel belum dibuat. Silakan jalankan SQL setup di Supabase.',
-    details,
-    needsManualSetup: true,
-    manualSQL
-  };
-}
 
 // Generate full setup SQL
 export function generateFullSetupSQL(): string {
   let sql = `-- =============================================
--- SMP (Sarapan Murah Pagi) Database Setup
--- Jalankan SQL ini di Supabase SQL Editor
+-- SMP (Sarapan Murah Pagi) - Database Setup
+-- Copy semua SQL ini dan jalankan di Supabase SQL Editor
 -- =============================================
 
 `;
@@ -408,39 +270,95 @@ export function generateFullSetupSQL(): string {
     sql += table.sql.trim() + '\n\n';
   }
 
-  // Add indexes
-  sql += `
--- =============================================
--- INDEXES untuk performa
--- =============================================
-
-CREATE INDEX IF NOT EXISTS idx_branches_region ON smp_branches(region_id);
-CREATE INDEX IF NOT EXISTS idx_branches_status ON smp_branches(status);
-CREATE INDEX IF NOT EXISTS idx_suppliers_branch ON smp_suppliers(branch_id);
-CREATE INDEX IF NOT EXISTS idx_products_branch ON smp_products(branch_id);
-CREATE INDEX IF NOT EXISTS idx_products_supplier ON smp_products(supplier_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_branch ON smp_transactions(branch_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_date ON smp_transactions(date);
-CREATE INDEX IF NOT EXISTS idx_stock_branch_date ON smp_stock(branch_id, date);
-CREATE INDEX IF NOT EXISTS idx_demand_tests_branch ON smp_demand_tests(branch_id);
-
-`;
-
   // Add RLS policies
   sql += `
 -- =============================================
--- ROW LEVEL SECURITY (RLS) Policies
+-- Row Level Security (RLS) - WAJIB untuk akses API
 -- =============================================
 
-${rlsPoliciesSQL}
+`;
 
+  for (const table of tableDefinitions) {
+    sql += `ALTER TABLE ${table.name} ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Enable all access for ${table.name}" ON ${table.name};
+CREATE POLICY "Enable all access for ${table.name}" ON ${table.name} FOR ALL USING (true) WITH CHECK (true);
+
+`;
+  }
+
+  sql += `
 -- =============================================
--- SETUP COMPLETE! 
--- Kembali ke aplikasi dan klik "Cek Ulang Tabel"
+-- SELESAI! Klik "Run" untuk menjalankan SQL ini
 -- =============================================
 `;
 
   return sql;
+}
+
+// Check if a table exists
+async function tableExists(config: SupabaseConfig, tableName: string): Promise<boolean> {
+  try {
+    const cleanUrl = cleanSupabaseUrl(config.url);
+    const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=id&limit=1`, {
+      method: 'GET',
+      headers: {
+        'apikey': config.anonKey,
+        'Authorization': `Bearer ${config.anonKey}`,
+      },
+    });
+    
+    // 200 = exists, anything else with "does not exist" = doesn't exist
+    if (response.ok) return true;
+    
+    const text = await response.text();
+    if (text.includes('does not exist')) return false;
+    
+    // 404 usually means table doesn't exist
+    return response.status !== 404 && response.status < 400;
+  } catch {
+    return false;
+  }
+}
+
+// Auto-setup: Check all tables
+export async function autoSetupTables(config: SupabaseConfig): Promise<{ 
+  success: boolean; 
+  message: string; 
+  details: { table: string; status: string }[];
+  needsManualSetup: boolean;
+  allTablesExist: boolean;
+}> {
+  const details: { table: string; status: string }[] = [];
+  let allExist = true;
+  
+  for (const table of tableDefinitions) {
+    const exists = await tableExists(config, table.name);
+    details.push({
+      table: table.name,
+      status: exists ? '✅ Ada' : '❌ Belum ada'
+    });
+    if (!exists) allExist = false;
+  }
+  
+  if (allExist) {
+    const updatedConfig = { ...config, tablesCreated: true };
+    saveSupabaseConfig(updatedConfig);
+    return {
+      success: true,
+      message: '✅ Semua tabel sudah tersedia! Siap untuk sync data.',
+      details,
+      needsManualSetup: false,
+      allTablesExist: true
+    };
+  }
+  
+  return {
+    success: false,
+    message: '⚠️ Beberapa tabel belum dibuat. Jalankan SQL setup di Supabase.',
+    details,
+    needsManualSetup: true,
+    allTablesExist: false
+  };
 }
 
 // Get all local data
@@ -697,7 +615,7 @@ export async function pushToSupabase(config: SupabaseConfig): Promise<{
   const data = getAllLocalData();
   const cleanUrl = cleanSupabaseUrl(config.url);
   
-  // Order matters due to foreign keys
+  // Order matters - tables without foreign key dependencies first
   const pushOrder = ['regions', 'branches', 'suppliers', 'products', 'users', 'transactions', 'stock', 'demand_tests', 'notifications'];
   
   for (const key of pushOrder) {
@@ -710,10 +628,14 @@ export async function pushToSupabase(config: SupabaseConfig): Promise<{
     }
     
     try {
-      // Delete existing data first
-      await fetch(`${cleanUrl}/rest/v1/${tableName}?id=neq.impossible`, {
+      // Delete existing data first (upsert alternative)
+      await fetch(`${cleanUrl}/rest/v1/${tableName}?id=neq.___never_match___`, {
         method: 'DELETE',
-        headers: getHeaders(config.anonKey, 'return=minimal'),
+        headers: {
+          'apikey': config.anonKey,
+          'Authorization': `Bearer ${config.anonKey}`,
+          'Content-Type': 'application/json',
+        },
       });
       
       // Transform and insert data
@@ -721,43 +643,37 @@ export async function pushToSupabase(config: SupabaseConfig): Promise<{
       
       const response = await fetch(`${cleanUrl}/rest/v1/${tableName}`, {
         method: 'POST',
-        headers: getHeaders(config.anonKey, 'return=minimal'),
+        headers: {
+          'apikey': config.anonKey,
+          'Authorization': `Bearer ${config.anonKey}`,
+          'Content-Type': 'application/json',
+          'Prefer': 'return=minimal',
+        },
         body: JSON.stringify(transformedData),
       });
       
       if (response.ok || response.status === 201) {
-        details.push({ table: tableName, status: '✅ Berhasil', count: items.length });
+        details.push({ table: tableName, status: '✅ OK', count: items.length });
       } else {
         const errorText = await response.text();
-        details.push({ table: tableName, status: `❌ ${errorText.substring(0, 50)}`, count: 0 });
+        console.error(`Push error for ${tableName}:`, errorText);
+        details.push({ table: tableName, status: `❌ ${response.status}`, count: 0 });
       }
     } catch (error) {
-      details.push({ table: tableName, status: `❌ ${String(error).substring(0, 50)}`, count: 0 });
+      console.error(`Push error for ${tableName}:`, error);
+      details.push({ table: tableName, status: `❌ Error`, count: 0 });
     }
   }
   
-  // Update sync meta
-  try {
-    await fetch(`${cleanUrl}/rest/v1/smp_sync_meta?on_conflict=id`, {
-      method: 'POST',
-      headers: getHeaders(config.anonKey, 'resolution=merge-duplicates'),
-      body: JSON.stringify({
-        id: 'main',
-        last_sync: new Date().toISOString(),
-        sync_version: 1,
-      }),
-    });
-  } catch {
-    // Ignore meta errors
-  }
-  
-  const successCount = details.filter(d => d.status.includes('✅')).length;
+  const successCount = details.filter(d => d.status.includes('✅') || d.status.includes('⏭️')).length;
   const updatedConfig = { ...config, lastSync: new Date().toISOString() };
   saveSupabaseConfig(updatedConfig);
   
   return {
     success: successCount === pushOrder.length,
-    message: `Push selesai: ${successCount}/${pushOrder.length} tabel berhasil`,
+    message: successCount === pushOrder.length 
+      ? `✅ Push berhasil! ${details.filter(d => d.status.includes('✅')).reduce((s, d) => s + d.count, 0)} data tersinkronisasi.`
+      : `⚠️ Push sebagian berhasil: ${successCount}/${pushOrder.length} tabel`,
     details,
   };
 }
@@ -778,19 +694,29 @@ export async function pullFromSupabase(config: SupabaseConfig): Promise<{
     try {
       const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=*`, {
         method: 'GET',
-        headers: getHeaders(config.anonKey),
+        headers: {
+          'apikey': config.anonKey,
+          'Authorization': `Bearer ${config.anonKey}`,
+          'Content-Type': 'application/json',
+        },
       });
       
       if (response.ok) {
         const items = await response.json();
         const transformedData = transformToLocalFormat(key, items);
         localStorage.setItem(`smp_${key}`, JSON.stringify(transformedData));
-        details.push({ table: tableName, status: '✅ Berhasil', count: items.length });
+        details.push({ table: tableName, status: '✅ OK', count: items.length });
       } else {
-        details.push({ table: tableName, status: '❌ Gagal fetch', count: 0 });
+        const text = await response.text();
+        if (text.includes('does not exist')) {
+          details.push({ table: tableName, status: '⚠️ Tabel belum ada', count: 0 });
+        } else {
+          details.push({ table: tableName, status: `❌ ${response.status}`, count: 0 });
+        }
       }
     } catch (error) {
-      details.push({ table: tableName, status: `❌ ${String(error).substring(0, 30)}`, count: 0 });
+      console.error(`Pull error for ${tableName}:`, error);
+      details.push({ table: tableName, status: '❌ Error', count: 0 });
     }
   }
   
@@ -798,9 +724,13 @@ export async function pullFromSupabase(config: SupabaseConfig): Promise<{
   const updatedConfig = { ...config, lastSync: new Date().toISOString() };
   saveSupabaseConfig(updatedConfig);
   
+  const totalPulled = details.filter(d => d.status.includes('✅')).reduce((s, d) => s + d.count, 0);
+  
   return {
     success: successCount > 0,
-    message: `Pull selesai: ${successCount}/${pullOrder.length} tabel berhasil. Refresh halaman untuk melihat data.`,
+    message: successCount > 0 
+      ? `✅ Pull berhasil! ${totalPulled} data diambil. Refresh halaman untuk melihat data baru.`
+      : '❌ Tidak ada data yang bisa di-pull. Pastikan tabel sudah dibuat.',
     details,
   };
 }
@@ -814,15 +744,19 @@ export async function getTableInfo(config: SupabaseConfig): Promise<{
   
   for (const [, tableName] of Object.entries(tableNameMap)) {
     try {
-      const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=id`, {
-        method: 'GET',
-        headers: getHeaders(config.anonKey, 'count=exact'),
+      const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=id&limit=1`, {
+        method: 'HEAD',
+        headers: {
+          'apikey': config.anonKey,
+          'Authorization': `Bearer ${config.anonKey}`,
+          'Prefer': 'count=exact',
+        },
       });
       
       if (response.ok) {
         const countHeader = response.headers.get('content-range');
         const count = countHeader ? parseInt(countHeader.split('/')[1] || '0') : 0;
-        tables.push({ name: tableName, exists: true, count });
+        tables.push({ name: tableName, exists: true, count: isNaN(count) ? 0 : count });
       } else {
         tables.push({ name: tableName, exists: false, count: 0 });
       }
