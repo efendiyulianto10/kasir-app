@@ -25,33 +25,73 @@ export function clearSupabaseConfig(): void {
   localStorage.removeItem('smp_supabase_config');
 }
 
+// Clean and validate Supabase URL
+function cleanSupabaseUrl(url: string): string {
+  let cleaned = url.trim();
+  // Remove trailing slash
+  if (cleaned.endsWith('/')) {
+    cleaned = cleaned.slice(0, -1);
+  }
+  // Ensure https
+  if (!cleaned.startsWith('http://') && !cleaned.startsWith('https://')) {
+    cleaned = 'https://' + cleaned;
+  }
+  return cleaned;
+}
+
 // Headers for Supabase requests
-function getHeaders(anonKey: string) {
-  return {
+function getHeaders(anonKey: string, preferHeader?: string) {
+  const headers: Record<string, string> = {
     'apikey': anonKey,
     'Authorization': `Bearer ${anonKey}`,
     'Content-Type': 'application/json',
-    'Prefer': 'return=minimal',
   };
+  if (preferHeader) {
+    headers['Prefer'] = preferHeader;
+  }
+  return headers;
 }
 
 // Test connection to Supabase
 export async function testConnection(url: string, anonKey: string): Promise<{ success: boolean; message: string }> {
   try {
-    const response = await fetch(`${url}/rest/v1/`, {
+    const cleanUrl = cleanSupabaseUrl(url);
+    
+    // Test with a simple health check - try to access the REST API root
+    // This endpoint returns OpenAPI spec and is always accessible with valid credentials
+    const response = await fetch(`${cleanUrl}/rest/v1/`, {
       method: 'GET',
-      headers: getHeaders(anonKey),
+      headers: {
+        'apikey': anonKey,
+        'Authorization': `Bearer ${anonKey}`,
+      },
     });
     
+    // 200 = success, we got the OpenAPI spec
+    // 401 = unauthorized (bad API key)
+    // 404 = might be wrong URL format
+    
     if (response.ok || response.status === 200) {
-      return { success: true, message: 'Koneksi berhasil!' };
-    } else if (response.status === 401) {
-      return { success: false, message: 'API Key tidak valid' };
+      return { success: true, message: '✅ Koneksi berhasil! Supabase siap digunakan.' };
+    } else if (response.status === 401 || response.status === 403) {
+      return { success: false, message: '❌ API Key tidak valid atau tidak memiliki akses. Pastikan menggunakan "anon public" key.' };
+    } else if (response.status === 404) {
+      return { success: false, message: '❌ URL tidak valid. Pastikan format: https://xxxxx.supabase.co' };
     } else {
-      return { success: false, message: `Error: ${response.status}` };
+      const text = await response.text();
+      return { success: false, message: `❌ Error ${response.status}: ${text.substring(0, 100)}` };
     }
   } catch (error) {
-    return { success: false, message: 'Tidak bisa terhubung ke Supabase. Periksa URL.' };
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    
+    if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError')) {
+      return { 
+        success: false, 
+        message: '❌ Tidak bisa terhubung. Periksa:\n• URL sudah benar (https://xxxxx.supabase.co)\n• Koneksi internet stabil\n• Project Supabase aktif' 
+      };
+    }
+    
+    return { success: false, message: `❌ Error: ${errorMsg}` };
   }
 }
 
@@ -294,10 +334,12 @@ END $$;
 // Check if a table exists
 async function tableExists(config: SupabaseConfig, tableName: string): Promise<boolean> {
   try {
-    const response = await fetch(`${config.url}/rest/v1/${tableName}?select=id&limit=1`, {
+    const cleanUrl = cleanSupabaseUrl(config.url);
+    const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=id&limit=1`, {
       method: 'GET',
       headers: getHeaders(config.anonKey),
     });
+    // 200 = table exists, 404 or 400 with "relation does not exist" = table doesn't exist
     return response.ok;
   } catch {
     return false;
@@ -653,6 +695,7 @@ export async function pushToSupabase(config: SupabaseConfig): Promise<{
 }> {
   const details: { table: string; status: string; count: number }[] = [];
   const data = getAllLocalData();
+  const cleanUrl = cleanSupabaseUrl(config.url);
   
   // Order matters due to foreign keys
   const pushOrder = ['regions', 'branches', 'suppliers', 'products', 'users', 'transactions', 'stock', 'demand_tests', 'notifications'];
@@ -668,20 +711,17 @@ export async function pushToSupabase(config: SupabaseConfig): Promise<{
     
     try {
       // Delete existing data first
-      await fetch(`${config.url}/rest/v1/${tableName}?id=neq.impossible`, {
+      await fetch(`${cleanUrl}/rest/v1/${tableName}?id=neq.impossible`, {
         method: 'DELETE',
-        headers: getHeaders(config.anonKey),
+        headers: getHeaders(config.anonKey, 'return=minimal'),
       });
       
       // Transform and insert data
       const transformedData = transformToSupabaseFormat(key, items);
       
-      const response = await fetch(`${config.url}/rest/v1/${tableName}`, {
+      const response = await fetch(`${cleanUrl}/rest/v1/${tableName}`, {
         method: 'POST',
-        headers: {
-          ...getHeaders(config.anonKey),
-          'Prefer': 'return=minimal',
-        },
+        headers: getHeaders(config.anonKey, 'return=minimal'),
         body: JSON.stringify(transformedData),
       });
       
@@ -698,12 +738,9 @@ export async function pushToSupabase(config: SupabaseConfig): Promise<{
   
   // Update sync meta
   try {
-    await fetch(`${config.url}/rest/v1/smp_sync_meta?on_conflict=id`, {
+    await fetch(`${cleanUrl}/rest/v1/smp_sync_meta?on_conflict=id`, {
       method: 'POST',
-      headers: {
-        ...getHeaders(config.anonKey),
-        'Prefer': 'resolution=merge-duplicates',
-      },
+      headers: getHeaders(config.anonKey, 'resolution=merge-duplicates'),
       body: JSON.stringify({
         id: 'main',
         last_sync: new Date().toISOString(),
@@ -733,12 +770,13 @@ export async function pullFromSupabase(config: SupabaseConfig): Promise<{
 }> {
   const details: { table: string; status: string; count: number }[] = [];
   const pullOrder = ['regions', 'branches', 'suppliers', 'products', 'users', 'transactions', 'stock', 'demand_tests', 'notifications'];
+  const cleanUrl = cleanSupabaseUrl(config.url);
   
   for (const key of pullOrder) {
     const tableName = tableNameMap[key];
     
     try {
-      const response = await fetch(`${config.url}/rest/v1/${tableName}?select=*`, {
+      const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=*`, {
         method: 'GET',
         headers: getHeaders(config.anonKey),
       });
@@ -772,15 +810,13 @@ export async function getTableInfo(config: SupabaseConfig): Promise<{
   tables: { name: string; exists: boolean; count: number }[] 
 }> {
   const tables: { name: string; exists: boolean; count: number }[] = [];
+  const cleanUrl = cleanSupabaseUrl(config.url);
   
   for (const [, tableName] of Object.entries(tableNameMap)) {
     try {
-      const response = await fetch(`${config.url}/rest/v1/${tableName}?select=id`, {
+      const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=id`, {
         method: 'GET',
-        headers: {
-          ...getHeaders(config.anonKey),
-          'Prefer': 'count=exact',
-        },
+        headers: getHeaders(config.anonKey, 'count=exact'),
       });
       
       if (response.ok) {

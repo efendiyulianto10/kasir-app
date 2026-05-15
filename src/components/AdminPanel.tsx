@@ -507,15 +507,17 @@ export default function AdminPanel({
 
             {/* Sync Message */}
             {syncMessage && (
-              <div className={`rounded-xl p-4 flex items-center gap-3 ${
+              <div className={`rounded-xl p-4 ${
                 syncMessage.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' :
                 syncMessage.type === 'error' ? 'bg-red-50 text-red-700 border border-red-200' :
                 'bg-blue-50 text-blue-700 border border-blue-200'
               }`}>
-                {syncMessage.type === 'success' ? <CheckCircle size={18} /> :
-                 syncMessage.type === 'error' ? <XCircle size={18} /> :
-                 <Loader2 size={18} className="animate-spin" />}
-                <span className="text-sm">{syncMessage.text}</span>
+                <div className="flex items-start gap-3">
+                  {syncMessage.type === 'success' ? <CheckCircle size={18} className="mt-0.5 flex-shrink-0" /> :
+                   syncMessage.type === 'error' ? <XCircle size={18} className="mt-0.5 flex-shrink-0" /> :
+                   <Loader2 size={18} className="animate-spin mt-0.5 flex-shrink-0" />}
+                  <span className="text-sm whitespace-pre-line">{syncMessage.text}</span>
+                </div>
               </div>
             )}
 
@@ -524,29 +526,40 @@ export default function AdminPanel({
               <h4 className="font-medium text-gray-900 flex items-center gap-2">
                 <Database size={16} /> Konfigurasi Supabase
               </h4>
+
+              {/* Help Box */}
+              <div className="bg-blue-50 rounded-lg p-3 text-xs text-blue-700">
+                <p className="font-medium mb-1">📍 Cara mendapatkan URL & API Key:</p>
+                <ol className="list-decimal list-inside space-y-0.5">
+                  <li>Buka <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer" className="underline">Supabase Dashboard</a></li>
+                  <li>Pilih project Anda (atau buat baru)</li>
+                  <li>Klik <b>Settings</b> (ikon gear) → <b>API</b></li>
+                  <li>Copy <b>Project URL</b> dan <b>anon public</b> key</li>
+                </ol>
+              </div>
               
               <div>
-                <label className="text-sm font-medium text-gray-700">Supabase URL</label>
+                <label className="text-sm font-medium text-gray-700">Supabase Project URL</label>
                 <input
                   type="url"
                   value={supabaseUrl}
                   onChange={e => setSupabaseUrl(e.target.value)}
-                  className="w-full mt-1 p-3 border rounded-xl text-sm focus:ring-2 focus:ring-purple-500"
-                  placeholder="https://xxxxx.supabase.co"
+                  className="w-full mt-1 p-3 border rounded-xl text-sm focus:ring-2 focus:ring-purple-500 font-mono"
+                  placeholder="https://abcdefghij.supabase.co"
                 />
-                <p className="text-xs text-gray-400 mt-1">Dari Settings → API → Project URL</p>
+                <p className="text-xs text-gray-400 mt-1">Format: https://[project-id].supabase.co</p>
               </div>
 
               <div>
                 <label className="text-sm font-medium text-gray-700">API Key (anon public)</label>
                 <input
-                  type="password"
+                  type="text"
                   value={supabaseKey}
                   onChange={e => setSupabaseKey(e.target.value)}
-                  className="w-full mt-1 p-3 border rounded-xl text-sm focus:ring-2 focus:ring-purple-500"
+                  className="w-full mt-1 p-3 border rounded-xl text-sm focus:ring-2 focus:ring-purple-500 font-mono text-xs"
                   placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                 />
-                <p className="text-xs text-gray-400 mt-1">Dari Settings → API → anon public key</p>
+                <p className="text-xs text-gray-400 mt-1">⚠️ Gunakan <b>anon public</b> key, BUKAN service_role key</p>
               </div>
 
               <button
