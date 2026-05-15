@@ -108,8 +108,12 @@ export default function AdminPanel({
       };
       saveSupabaseConfig(config);
       setSupabaseConfig(config);
+      setSupabaseUrl(config.url);
+      setSupabaseKey(config.anonKey);
       
       // Auto check tables
+      setSupabaseUrl(config.url);
+      setSupabaseKey(config.anonKey);
       setSyncMessage({ type: 'info', text: '✅ Terhubung! Mengecek tabel...' });
       const tableInfo = await getTableInfo(config);
       setTableStatus(tableInfo.tables);

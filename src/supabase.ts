@@ -21,12 +21,16 @@ const strip = (s: string) => s.replace(/[\s\r\n\t]+/g, '');
 // Clean URL: ensure it's just https://xxx.supabase.co with nothing trailing
 function cleanUrl(raw: string): string {
   let u = strip(raw);
+  // Add protocol if missing
+  if (!/^https?:\/\//i.test(u)) {
+    u = `https://${u}`;
+  }
   // Remove trailing slashes
   u = u.replace(/\/+$/, '');
   // Remove /rest/v1 if user pasted the full API url
-  u = u.replace(/\/rest\/v1\/?$/, '');
+  u = u.replace(/\/rest\/v1\/?$/i, '');
   // Remove /rest if partial
-  u = u.replace(/\/rest\/?$/, '');
+  u = u.replace(/\/rest\/?$/i, '');
   return u;
 }
 
@@ -72,6 +76,16 @@ export async function testConnection(
   if (!url) return r(false, 'URL kosong', log);
   if (!key) return r(false, 'Key kosong', log);
   if (key.length < 40) return r(false, `Key terlalu pendek (${key.length}). Copy ulang LENGKAP dari Supabase.`, log);
+
+  try {
+    new URL(url);
+  } catch {
+    return r(false, 'URL Supabase tidak valid. Gunakan format https://xxxxx.supabase.co', log);
+  }
+
+  if (!url.includes('.supabase.co')) {
+    return r(false, 'URL harus domain Supabase (supabase.co)', log);
+  }
 
   // decode JWT to verify key belongs to this project
   try {
