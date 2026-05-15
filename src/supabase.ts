@@ -1,13 +1,13 @@
-// Supabase sync configuration and functions
+// Supabase Database Integration for SMP
 
 export interface SupabaseConfig {
   url: string;
   anonKey: string;
   enabled: boolean;
   lastSync?: string;
-  tablesCreated?: boolean;
 }
 
+// Local storage helpers
 export function getSupabaseConfig(): SupabaseConfig | null {
   try {
     const data = localStorage.getItem('smp_supabase_config');
@@ -25,115 +25,136 @@ export function clearSupabaseConfig(): void {
   localStorage.removeItem('smp_supabase_config');
 }
 
-// Clean and validate Supabase URL
-function cleanSupabaseUrl(url: string): string {
-  let cleaned = url.trim();
-  // Remove trailing slash
-  while (cleaned.endsWith('/')) {
-    cleaned = cleaned.slice(0, -1);
-  }
-  // Ensure https
-  if (!cleaned.startsWith('http://') && !cleaned.startsWith('https://')) {
-    cleaned = 'https://' + cleaned;
-  }
-  return cleaned;
+// Clean URL
+function cleanUrl(url: string): string {
+  let u = url.trim();
+  while (u.endsWith('/')) u = u.slice(0, -1);
+  if (!u.startsWith('http')) u = 'https://' + u;
+  return u;
 }
 
-// Test connection to Supabase
-export async function testConnection(url: string, anonKey: string): Promise<{ success: boolean; message: string }> {
+// Supabase REST API helper
+async function supabaseRequest(
+  config: SupabaseConfig,
+  endpoint: string,
+  method: 'GET' | 'POST' | 'DELETE' | 'PATCH' = 'GET',
+  body?: unknown
+): Promise<{ ok: boolean; status: number; data?: unknown; error?: string }> {
   try {
-    const cleanUrl = cleanSupabaseUrl(url);
-    
-    // Validate URL format
-    if (!cleanUrl.includes('.supabase.co')) {
-      return { 
-        success: false, 
-        message: '❌ URL tidak valid. Format harus: https://[project-ref].supabase.co' 
-      };
+    const url = `${cleanUrl(config.url)}/rest/v1/${endpoint}`;
+    const headers: Record<string, string> = {
+      'apikey': config.anonKey,
+      'Authorization': `Bearer ${config.anonKey}`,
+      'Content-Type': 'application/json',
+      'Prefer': method === 'POST' ? 'return=representation' : 'return=minimal',
+    };
+
+    const options: RequestInit = { method, headers };
+    if (body && (method === 'POST' || method === 'PATCH')) {
+      options.body = JSON.stringify(body);
     }
 
-    // Validate API key format (JWT)
-    if (!anonKey.startsWith('eyJ')) {
-      return { 
-        success: false, 
-        message: '❌ API Key tidak valid. Key harus dimulai dengan "eyJ..."' 
-      };
-    }
-
-    // Try to access the REST API - we'll try to query a non-existent table
-    // This will return 404 if connected (table doesn't exist) or 401 if not authorized
-    const response = await fetch(`${cleanUrl}/rest/v1/smp_connection_test?select=*&limit=1`, {
-      method: 'GET',
-      headers: {
-        'apikey': anonKey,
-        'Authorization': `Bearer ${anonKey}`,
-      },
-    });
-    
-    // 200 = table exists (great!)
-    // 404 or response with "relation does not exist" = connected but table doesn't exist (still good!)
-    // 401/403 = authentication failed
-    
-    if (response.status === 200) {
-      return { success: true, message: '✅ Koneksi berhasil!' };
-    }
-    
-    if (response.status === 401 || response.status === 403) {
-      return { 
-        success: false, 
-        message: '❌ API Key ditolak. Pastikan:\n• Menggunakan "anon public" key\n• Key di-copy dengan lengkap\n• Project Supabase masih aktif' 
-      };
-    }
-    
-    // Check response body for more info
+    const response = await fetch(url, options);
     const text = await response.text();
     
-    // If it says relation doesn't exist, that's fine - it means we're connected!
-    if (text.includes('does not exist') || text.includes('relation') || response.status === 404) {
-      return { success: true, message: '✅ Koneksi berhasil! Tabel belum dibuat.' };
-    }
-    
-    // Any other response, consider it a success if not 4xx/5xx auth error
-    if (response.status >= 200 && response.status < 400) {
-      return { success: true, message: '✅ Koneksi berhasil!' };
+    let data;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
     }
 
-    return { success: false, message: `❌ Error ${response.status}: ${text.substring(0, 100)}` };
-    
-  } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    
-    if (errorMsg.includes('Failed to fetch') || errorMsg.includes('NetworkError') || errorMsg.includes('TypeError')) {
-      return { 
-        success: false, 
-        message: '❌ Tidak bisa terhubung ke server.\n\nKemungkinan penyebab:\n• URL salah\n• Tidak ada koneksi internet\n• Project Supabase tidak aktif/paused' 
-      };
-    }
-    
-    return { success: false, message: `❌ Error: ${errorMsg}` };
+    return {
+      ok: response.ok,
+      status: response.status,
+      data,
+      error: response.ok ? undefined : (typeof data === 'object' && data?.message) || text
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      error: err instanceof Error ? err.message : 'Network error'
+    };
   }
 }
 
-// Table definitions for auto-setup
-const tableDefinitions = [
-  {
-    name: 'smp_users',
-    sql: `
-CREATE TABLE IF NOT EXISTS smp_users (
-  id TEXT PRIMARY KEY,
-  username TEXT UNIQUE NOT NULL,
-  password TEXT NOT NULL,
-  name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('owner', 'manager_wilayah', 'pic_cabang', 'kasir')),
-  region_id TEXT,
-  branch_id TEXT,
-  phone TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-);`
-  },
-  {
-    name: 'smp_regions',
-    sql: `
+// Test connection - try to access the API
+export async function testConnection(url: string, apiKey: string): Promise<{ 
+  success: boolean; 
+  message: string;
+  hint?: string;
+}> {
+  // Validate inputs
+  if (!url || !apiKey) {
+    return { success: false, message: 'URL dan API Key harus diisi' };
+  }
+
+  const cleanedUrl = cleanUrl(url);
+  
+  if (!cleanedUrl.includes('supabase')) {
+    return { 
+      success: false, 
+      message: 'URL tidak valid',
+      hint: 'Format: https://[project-ref].supabase.co'
+    };
+  }
+
+  if (!apiKey.startsWith('eyJ')) {
+    return { 
+      success: false, 
+      message: 'Format API Key tidak valid',
+      hint: 'API Key harus dimulai dengan "eyJ..."'
+    };
+  }
+
+  try {
+    // Try to query - even if table doesn't exist, we can verify auth
+    const response = await fetch(`${cleanedUrl}/rest/v1/`, {
+      method: 'GET',
+      headers: {
+        'apikey': apiKey,
+        'Authorization': `Bearer ${apiKey}`,
+      },
+    });
+
+    if (response.ok) {
+      return { success: true, message: '✅ Koneksi berhasil!' };
+    }
+
+    if (response.status === 401) {
+      return { 
+        success: false, 
+        message: '❌ API Key tidak valid atau expired',
+        hint: 'Pastikan menggunakan anon/public key dari Supabase Dashboard > Settings > API'
+      };
+    }
+
+    if (response.status === 403) {
+      // 403 bisa berarti RLS blocking, tapi koneksi OK
+      return { success: true, message: '✅ Koneksi berhasil! (RLS aktif)' };
+    }
+
+    return { success: false, message: `Error: ${response.status}` };
+  } catch (err) {
+    return { 
+      success: false, 
+      message: '❌ Gagal terhubung ke server',
+      hint: 'Periksa URL dan koneksi internet'
+    };
+  }
+}
+
+// Generate SQL untuk setup semua tabel
+export function generateSetupSQL(): string {
+  return `
+-- ============================================
+-- SMP (Sarapan Murah Pagi) - Database Setup
+-- Jalankan SEMUA SQL ini di Supabase SQL Editor
+-- ============================================
+
+-- 1. BUAT TABEL-TABEL
+
 CREATE TABLE IF NOT EXISTS smp_regions (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -141,26 +162,32 @@ CREATE TABLE IF NOT EXISTS smp_regions (
   manager_name TEXT,
   manager_phone TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
-);`
-  },
-  {
-    name: 'smp_branches',
-    sql: `
+);
+
 CREATE TABLE IF NOT EXISTS smp_branches (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   address TEXT,
   region_id TEXT,
-  status TEXT DEFAULT 'testing' CHECK (status IN ('active', 'testing', 'closed')),
+  status TEXT DEFAULT 'testing',
   open_date TEXT,
   pic_name TEXT,
   pic_phone TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
-);`
-  },
-  {
-    name: 'smp_suppliers',
-    sql: `
+);
+
+CREATE TABLE IF NOT EXISTS smp_users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL,
+  password TEXT NOT NULL,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL,
+  region_id TEXT,
+  branch_id TEXT,
+  phone TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS smp_suppliers (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -169,17 +196,14 @@ CREATE TABLE IF NOT EXISTS smp_suppliers (
   branch_id TEXT,
   products JSONB DEFAULT '[]',
   rating NUMERIC DEFAULT 5,
-  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+  status TEXT DEFAULT 'active',
   created_at TIMESTAMPTZ DEFAULT NOW()
-);`
-  },
-  {
-    name: 'smp_products',
-    sql: `
+);
+
 CREATE TABLE IF NOT EXISTS smp_products (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  category TEXT CHECK (category IN ('makanan', 'minuman', 'snack')),
+  category TEXT,
   supplier_id TEXT,
   supplier_name TEXT,
   branch_id TEXT,
@@ -187,26 +211,20 @@ CREATE TABLE IF NOT EXISTS smp_products (
   cost_price INTEGER DEFAULT 9000,
   profit INTEGER DEFAULT 1000,
   created_at TIMESTAMPTZ DEFAULT NOW()
-);`
-  },
-  {
-    name: 'smp_transactions',
-    sql: `
+);
+
 CREATE TABLE IF NOT EXISTS smp_transactions (
   id TEXT PRIMARY KEY,
   branch_id TEXT,
   date TEXT NOT NULL,
-  items JSONB NOT NULL DEFAULT '[]',
-  payment_method TEXT CHECK (payment_method IN ('cash', 'qris', 'shopeefood', 'gofood')),
+  items JSONB DEFAULT '[]',
+  payment_method TEXT,
   total_amount INTEGER DEFAULT 0,
   total_profit INTEGER DEFAULT 0,
   input_by TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
-);`
-  },
-  {
-    name: 'smp_stock',
-    sql: `
+);
+
 CREATE TABLE IF NOT EXISTS smp_stock (
   id TEXT PRIMARY KEY,
   branch_id TEXT,
@@ -219,11 +237,8 @@ CREATE TABLE IF NOT EXISTS smp_stock (
   qty_sold INTEGER DEFAULT 0,
   qty_returned INTEGER DEFAULT 0,
   created_at TIMESTAMPTZ DEFAULT NOW()
-);`
-  },
-  {
-    name: 'smp_demand_tests',
-    sql: `
+);
+
 CREATE TABLE IF NOT EXISTS smp_demand_tests (
   id TEXT PRIMARY KEY,
   branch_id TEXT,
@@ -235,365 +250,55 @@ CREATE TABLE IF NOT EXISTS smp_demand_tests (
   avg_daily_revenue INTEGER DEFAULT 0,
   avg_daily_profit INTEGER DEFAULT 0,
   consistency INTEGER DEFAULT 0,
-  status TEXT DEFAULT 'testing' CHECK (status IN ('testing', 'consistent', 'inconsistent', 'graduated')),
+  status TEXT DEFAULT 'testing',
   notes TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW()
-);`
-  },
-  {
-    name: 'smp_notifications',
-    sql: `
+);
+
 CREATE TABLE IF NOT EXISTS smp_notifications (
   id TEXT PRIMARY KEY,
-  type TEXT CHECK (type IN ('sales_report', 'stock_alert', 'return_alert', 'milestone')),
+  type TEXT,
   message TEXT,
   branch_id TEXT,
   phone TEXT,
   sent BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMPTZ DEFAULT NOW()
-);`
-  }
-];
+);
 
-// Generate full setup SQL
-export function generateFullSetupSQL(): string {
-  let sql = `-- =============================================
--- SMP (Sarapan Murah Pagi) - Database Setup
--- Copy semua SQL ini dan jalankan di Supabase SQL Editor
--- =============================================
+-- 2. ENABLE ROW LEVEL SECURITY & BUAT POLICY UNTUK AKSES PUBLIK
+-- PENTING: Tanpa ini, API tidak bisa akses data!
 
-`;
+DO $$
+DECLARE
+  t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['smp_regions', 'smp_branches', 'smp_users', 'smp_suppliers', 'smp_products', 'smp_transactions', 'smp_stock', 'smp_demand_tests', 'smp_notifications']
+  LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS "allow_all_%s" ON %I', t, t);
+    EXECUTE format('CREATE POLICY "allow_all_%s" ON %I FOR ALL TO anon, authenticated USING (true) WITH CHECK (true)', t, t);
+  END LOOP;
+END $$;
 
-  // Add all table definitions
-  for (const table of tableDefinitions) {
-    sql += `-- Table: ${table.name}\n`;
-    sql += table.sql.trim() + '\n\n';
-  }
+-- 3. GRANT PERMISSIONS
+GRANT ALL ON smp_regions TO anon, authenticated;
+GRANT ALL ON smp_branches TO anon, authenticated;
+GRANT ALL ON smp_users TO anon, authenticated;
+GRANT ALL ON smp_suppliers TO anon, authenticated;
+GRANT ALL ON smp_products TO anon, authenticated;
+GRANT ALL ON smp_transactions TO anon, authenticated;
+GRANT ALL ON smp_stock TO anon, authenticated;
+GRANT ALL ON smp_demand_tests TO anon, authenticated;
+GRANT ALL ON smp_notifications TO anon, authenticated;
 
-  // Add RLS policies
-  sql += `
--- =============================================
--- Row Level Security (RLS) - WAJIB untuk akses API
--- =============================================
-
-`;
-
-  for (const table of tableDefinitions) {
-    sql += `ALTER TABLE ${table.name} ENABLE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS "Enable all access for ${table.name}" ON ${table.name};
-CREATE POLICY "Enable all access for ${table.name}" ON ${table.name} FOR ALL USING (true) WITH CHECK (true);
-
-`;
-  }
-
-  sql += `
--- =============================================
--- SELESAI! Klik "Run" untuk menjalankan SQL ini
--- =============================================
-`;
-
-  return sql;
+-- ============================================
+-- SELESAI! Klik RUN untuk menjalankan semua SQL
+-- ============================================
+`.trim();
 }
 
-// Check if a table exists
-async function tableExists(config: SupabaseConfig, tableName: string): Promise<boolean> {
-  try {
-    const cleanUrl = cleanSupabaseUrl(config.url);
-    const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=id&limit=1`, {
-      method: 'GET',
-      headers: {
-        'apikey': config.anonKey,
-        'Authorization': `Bearer ${config.anonKey}`,
-      },
-    });
-    
-    // 200 = exists, anything else with "does not exist" = doesn't exist
-    if (response.ok) return true;
-    
-    const text = await response.text();
-    if (text.includes('does not exist')) return false;
-    
-    // 404 usually means table doesn't exist
-    return response.status !== 404 && response.status < 400;
-  } catch {
-    return false;
-  }
-}
-
-// Auto-setup: Check all tables
-export async function autoSetupTables(config: SupabaseConfig): Promise<{ 
-  success: boolean; 
-  message: string; 
-  details: { table: string; status: string }[];
-  needsManualSetup: boolean;
-  allTablesExist: boolean;
-}> {
-  const details: { table: string; status: string }[] = [];
-  let allExist = true;
-  
-  for (const table of tableDefinitions) {
-    const exists = await tableExists(config, table.name);
-    details.push({
-      table: table.name,
-      status: exists ? '✅ Ada' : '❌ Belum ada'
-    });
-    if (!exists) allExist = false;
-  }
-  
-  if (allExist) {
-    const updatedConfig = { ...config, tablesCreated: true };
-    saveSupabaseConfig(updatedConfig);
-    return {
-      success: true,
-      message: '✅ Semua tabel sudah tersedia! Siap untuk sync data.',
-      details,
-      needsManualSetup: false,
-      allTablesExist: true
-    };
-  }
-  
-  return {
-    success: false,
-    message: '⚠️ Beberapa tabel belum dibuat. Jalankan SQL setup di Supabase.',
-    details,
-    needsManualSetup: true,
-    allTablesExist: false
-  };
-}
-
-// Get all local data
-function getAllLocalData(): Record<string, unknown[]> {
-  const keys = ['users', 'regions', 'branches', 'suppliers', 'products', 'transactions', 'stock', 'demand_tests', 'notifications'];
-  const data: Record<string, unknown[]> = {};
-  
-  keys.forEach(key => {
-    const val = localStorage.getItem(`smp_${key}`);
-    if (val) {
-      try {
-        data[key] = JSON.parse(val);
-      } catch {
-        data[key] = [];
-      }
-    } else {
-      data[key] = [];
-    }
-  });
-  
-  return data;
-}
-
-// Transform local data to Supabase format (snake_case)
-function transformToSupabaseFormat(key: string, items: unknown[]): unknown[] {
-  const transformMap: Record<string, (item: Record<string, unknown>) => Record<string, unknown>> = {
-    users: (item) => ({
-      id: item.id,
-      username: item.username,
-      password: item.password,
-      name: item.name,
-      role: item.role,
-      region_id: item.regionId || null,
-      branch_id: item.branchId || null,
-      phone: item.phone || null,
-    }),
-    regions: (item) => ({
-      id: item.id,
-      name: item.name,
-      manager_id: item.managerId || null,
-      manager_name: item.managerName || null,
-      manager_phone: item.managerPhone || null,
-    }),
-    branches: (item) => ({
-      id: item.id,
-      name: item.name,
-      address: item.address || null,
-      region_id: item.regionId || null,
-      status: item.status || 'testing',
-      open_date: item.openDate || null,
-      pic_name: item.picName || null,
-      pic_phone: item.picPhone || null,
-    }),
-    suppliers: (item) => ({
-      id: item.id,
-      name: item.name,
-      phone: item.phone || null,
-      address: item.address || null,
-      branch_id: item.branchId || null,
-      products: item.products || [],
-      rating: item.rating || 5,
-      status: item.status || 'active',
-    }),
-    products: (item) => ({
-      id: item.id,
-      name: item.name,
-      category: item.category || 'makanan',
-      supplier_id: item.supplierId || null,
-      supplier_name: item.supplierName || null,
-      branch_id: item.branchId || null,
-      price: item.price || 10000,
-      cost_price: item.costPrice || 9000,
-      profit: item.profit || 1000,
-    }),
-    transactions: (item) => ({
-      id: item.id,
-      branch_id: item.branchId || null,
-      date: item.date,
-      items: item.items || [],
-      payment_method: item.paymentMethod || 'cash',
-      total_amount: item.totalAmount || 0,
-      total_profit: item.totalProfit || 0,
-      input_by: item.inputBy || null,
-      created_at: item.createdAt || new Date().toISOString(),
-    }),
-    stock: (item) => ({
-      id: item.id,
-      branch_id: item.branchId || null,
-      date: item.date,
-      supplier_id: item.supplierId || null,
-      supplier_name: item.supplierName || null,
-      product_id: item.productId || null,
-      product_name: item.productName || null,
-      qty_received: item.qtyReceived || 0,
-      qty_sold: item.qtySold || 0,
-      qty_returned: item.qtyReturned || 0,
-    }),
-    demand_tests: (item) => ({
-      id: item.id,
-      branch_id: item.branchId || null,
-      branch_name: item.branchName || null,
-      start_date: item.startDate || null,
-      end_date: item.endDate || null,
-      total_days: item.totalDays || 0,
-      avg_daily_sales: item.avgDailySales || 0,
-      avg_daily_revenue: item.avgDailyRevenue || 0,
-      avg_daily_profit: item.avgDailyProfit || 0,
-      consistency: item.consistency || 0,
-      status: item.status || 'testing',
-      notes: item.notes || null,
-    }),
-    notifications: (item) => ({
-      id: item.id,
-      type: item.type || 'sales_report',
-      message: item.message || null,
-      branch_id: item.branchId || null,
-      phone: item.phone || null,
-      sent: item.sent || false,
-      created_at: item.createdAt || new Date().toISOString(),
-    }),
-  };
-
-  const transformer = transformMap[key];
-  if (!transformer) return items;
-  
-  return (items as Record<string, unknown>[]).map(transformer);
-}
-
-// Transform Supabase data back to local format (camelCase)
-function transformToLocalFormat(key: string, items: unknown[]): unknown[] {
-  const transformMap: Record<string, (item: Record<string, unknown>) => Record<string, unknown>> = {
-    users: (item) => ({
-      id: item.id,
-      username: item.username,
-      password: item.password,
-      name: item.name,
-      role: item.role,
-      regionId: item.region_id || undefined,
-      branchId: item.branch_id || undefined,
-      phone: item.phone || undefined,
-    }),
-    regions: (item) => ({
-      id: item.id,
-      name: item.name,
-      managerId: item.manager_id || '',
-      managerName: item.manager_name || '',
-      managerPhone: item.manager_phone || '',
-    }),
-    branches: (item) => ({
-      id: item.id,
-      name: item.name,
-      address: item.address || '',
-      regionId: item.region_id || '',
-      status: item.status || 'testing',
-      openDate: item.open_date || '',
-      picName: item.pic_name || '',
-      picPhone: item.pic_phone || '',
-    }),
-    suppliers: (item) => ({
-      id: item.id,
-      name: item.name,
-      phone: item.phone || '',
-      address: item.address || '',
-      branchId: item.branch_id || '',
-      products: item.products || [],
-      rating: item.rating || 5,
-      status: item.status || 'active',
-    }),
-    products: (item) => ({
-      id: item.id,
-      name: item.name,
-      category: item.category || 'makanan',
-      supplierId: item.supplier_id || '',
-      supplierName: item.supplier_name || '',
-      branchId: item.branch_id || '',
-      price: item.price || 10000,
-      costPrice: item.cost_price || 9000,
-      profit: item.profit || 1000,
-    }),
-    transactions: (item) => ({
-      id: item.id,
-      branchId: item.branch_id || '',
-      date: item.date,
-      items: item.items || [],
-      paymentMethod: item.payment_method || 'cash',
-      totalAmount: item.total_amount || 0,
-      totalProfit: item.total_profit || 0,
-      inputBy: item.input_by || '',
-      createdAt: item.created_at || new Date().toISOString(),
-    }),
-    stock: (item) => ({
-      id: item.id,
-      branchId: item.branch_id || '',
-      date: item.date,
-      supplierId: item.supplier_id || '',
-      supplierName: item.supplier_name || '',
-      productId: item.product_id || '',
-      productName: item.product_name || '',
-      qtyReceived: item.qty_received || 0,
-      qtySold: item.qty_sold || 0,
-      qtyReturned: item.qty_returned || 0,
-    }),
-    demand_tests: (item) => ({
-      id: item.id,
-      branchId: item.branch_id || '',
-      branchName: item.branch_name || '',
-      startDate: item.start_date || '',
-      endDate: item.end_date || '',
-      totalDays: item.total_days || 0,
-      avgDailySales: item.avg_daily_sales || 0,
-      avgDailyRevenue: item.avg_daily_revenue || 0,
-      avgDailyProfit: item.avg_daily_profit || 0,
-      consistency: item.consistency || 0,
-      status: item.status || 'testing',
-      notes: item.notes || '',
-    }),
-    notifications: (item) => ({
-      id: item.id,
-      type: item.type || 'sales_report',
-      message: item.message || '',
-      branchId: item.branch_id || undefined,
-      phone: item.phone || undefined,
-      sent: item.sent || false,
-      createdAt: item.created_at || new Date().toISOString(),
-    }),
-  };
-
-  const transformer = transformMap[key];
-  if (!transformer) return items;
-  
-  return (items as Record<string, unknown>[]).map(transformer);
-}
-
-// Table name mapping
-const tableNameMap: Record<string, string> = {
+// Table mapping
+const TABLE_MAP: Record<string, string> = {
   users: 'smp_users',
   regions: 'smp_regions',
   branches: 'smp_branches',
@@ -605,165 +310,243 @@ const tableNameMap: Record<string, string> = {
   notifications: 'smp_notifications',
 };
 
-// Push data to Supabase (all tables)
-export async function pushToSupabase(config: SupabaseConfig): Promise<{ 
-  success: boolean; 
-  message: string;
-  details: { table: string; status: string; count: number }[];
+// Check table status
+export async function checkTables(config: SupabaseConfig): Promise<{
+  tables: { name: string; exists: boolean; count: number }[];
+  allExist: boolean;
 }> {
-  const details: { table: string; status: string; count: number }[] = [];
-  const data = getAllLocalData();
-  const cleanUrl = cleanSupabaseUrl(config.url);
-  
-  // Order matters - tables without foreign key dependencies first
-  const pushOrder = ['regions', 'branches', 'suppliers', 'products', 'users', 'transactions', 'stock', 'demand_tests', 'notifications'];
-  
-  for (const key of pushOrder) {
-    const tableName = tableNameMap[key];
-    const items = data[key] || [];
+  const tables: { name: string; exists: boolean; count: number }[] = [];
+  let allExist = true;
+
+  for (const [, tableName] of Object.entries(TABLE_MAP)) {
+    const result = await supabaseRequest(config, `${tableName}?select=id&limit=1`);
     
-    if (items.length === 0) {
-      details.push({ table: tableName, status: '⏭️ Kosong', count: 0 });
-      continue;
+    if (result.ok) {
+      // Try to get count
+      const countResult = await supabaseRequest(config, `${tableName}?select=count`);
+      const count = Array.isArray(countResult.data) ? countResult.data.length : 0;
+      tables.push({ name: tableName, exists: true, count });
+    } else if (result.error?.includes('does not exist') || result.status === 404) {
+      tables.push({ name: tableName, exists: false, count: 0 });
+      allExist = false;
+    } else if (result.status === 403 || result.error?.includes('denied')) {
+      // RLS blocking - table exists but no access
+      tables.push({ name: tableName, exists: true, count: -1 }); // -1 = no access
+    } else {
+      tables.push({ name: tableName, exists: false, count: 0 });
+      allExist = false;
     }
-    
+  }
+
+  return { tables, allExist };
+}
+
+// Transform to Supabase format (snake_case)
+function toSupabase(key: string, item: Record<string, unknown>): Record<string, unknown> {
+  const maps: Record<string, Record<string, string>> = {
+    users: { regionId: 'region_id', branchId: 'branch_id' },
+    regions: { managerId: 'manager_id', managerName: 'manager_name', managerPhone: 'manager_phone' },
+    branches: { regionId: 'region_id', openDate: 'open_date', picName: 'pic_name', picPhone: 'pic_phone' },
+    suppliers: { branchId: 'branch_id' },
+    products: { supplierId: 'supplier_id', supplierName: 'supplier_name', branchId: 'branch_id', costPrice: 'cost_price' },
+    transactions: { branchId: 'branch_id', paymentMethod: 'payment_method', totalAmount: 'total_amount', totalProfit: 'total_profit', inputBy: 'input_by', createdAt: 'created_at' },
+    stock: { branchId: 'branch_id', supplierId: 'supplier_id', supplierName: 'supplier_name', productId: 'product_id', productName: 'product_name', qtyReceived: 'qty_received', qtySold: 'qty_sold', qtyReturned: 'qty_returned' },
+    demand_tests: { branchId: 'branch_id', branchName: 'branch_name', startDate: 'start_date', endDate: 'end_date', totalDays: 'total_days', avgDailySales: 'avg_daily_sales', avgDailyRevenue: 'avg_daily_revenue', avgDailyProfit: 'avg_daily_profit' },
+    notifications: { branchId: 'branch_id', createdAt: 'created_at' },
+  };
+
+  const map = maps[key] || {};
+  const result: Record<string, unknown> = {};
+  
+  for (const [k, v] of Object.entries(item)) {
+    const newKey = map[k] || k;
+    result[newKey] = v === undefined ? null : v;
+  }
+  
+  return result;
+}
+
+// Transform from Supabase format (camelCase)
+function fromSupabase(key: string, item: Record<string, unknown>): Record<string, unknown> {
+  const maps: Record<string, Record<string, string>> = {
+    users: { region_id: 'regionId', branch_id: 'branchId' },
+    regions: { manager_id: 'managerId', manager_name: 'managerName', manager_phone: 'managerPhone' },
+    branches: { region_id: 'regionId', open_date: 'openDate', pic_name: 'picName', pic_phone: 'picPhone' },
+    suppliers: { branch_id: 'branchId' },
+    products: { supplier_id: 'supplierId', supplier_name: 'supplierName', branch_id: 'branchId', cost_price: 'costPrice' },
+    transactions: { branch_id: 'branchId', payment_method: 'paymentMethod', total_amount: 'totalAmount', total_profit: 'totalProfit', input_by: 'inputBy', created_at: 'createdAt' },
+    stock: { branch_id: 'branchId', supplier_id: 'supplierId', supplier_name: 'supplierName', product_id: 'productId', product_name: 'productName', qty_received: 'qtyReceived', qty_sold: 'qtySold', qty_returned: 'qtyReturned' },
+    demand_tests: { branch_id: 'branchId', branch_name: 'branchName', start_date: 'startDate', end_date: 'endDate', total_days: 'totalDays', avg_daily_sales: 'avgDailySales', avg_daily_revenue: 'avgDailyRevenue', avg_daily_profit: 'avgDailyProfit' },
+    notifications: { branch_id: 'branchId', created_at: 'createdAt' },
+  };
+
+  const map = maps[key] || {};
+  const result: Record<string, unknown> = {};
+  
+  for (const [k, v] of Object.entries(item)) {
+    const newKey = map[k] || k;
+    result[newKey] = v;
+  }
+  
+  return result;
+}
+
+// Get all local data
+function getLocalData(): Record<string, unknown[]> {
+  const data: Record<string, unknown[]> = {};
+  
+  for (const key of Object.keys(TABLE_MAP)) {
     try {
-      // Delete existing data first (upsert alternative)
-      await fetch(`${cleanUrl}/rest/v1/${tableName}?id=neq.___never_match___`, {
-        method: 'DELETE',
-        headers: {
-          'apikey': config.anonKey,
-          'Authorization': `Bearer ${config.anonKey}`,
-          'Content-Type': 'application/json',
-        },
-      });
-      
-      // Transform and insert data
-      const transformedData = transformToSupabaseFormat(key, items);
-      
-      const response = await fetch(`${cleanUrl}/rest/v1/${tableName}`, {
-        method: 'POST',
-        headers: {
-          'apikey': config.anonKey,
-          'Authorization': `Bearer ${config.anonKey}`,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal',
-        },
-        body: JSON.stringify(transformedData),
-      });
-      
-      if (response.ok || response.status === 201) {
-        details.push({ table: tableName, status: '✅ OK', count: items.length });
-      } else {
-        const errorText = await response.text();
-        console.error(`Push error for ${tableName}:`, errorText);
-        details.push({ table: tableName, status: `❌ ${response.status}`, count: 0 });
-      }
-    } catch (error) {
-      console.error(`Push error for ${tableName}:`, error);
-      details.push({ table: tableName, status: `❌ Error`, count: 0 });
+      const stored = localStorage.getItem(`smp_${key}`);
+      data[key] = stored ? JSON.parse(stored) : [];
+    } catch {
+      data[key] = [];
     }
   }
   
-  const successCount = details.filter(d => d.status.includes('✅') || d.status.includes('⏭️')).length;
-  const updatedConfig = { ...config, lastSync: new Date().toISOString() };
-  saveSupabaseConfig(updatedConfig);
+  return data;
+}
+
+// PUSH: Upload all data to Supabase
+export async function pushToSupabase(config: SupabaseConfig): Promise<{
+  success: boolean;
+  message: string;
+  results: { table: string; status: string; count: number }[];
+}> {
+  const results: { table: string; status: string; count: number }[] = [];
+  const localData = getLocalData();
+  
+  // Order for push (avoid FK issues)
+  const order = ['regions', 'branches', 'users', 'suppliers', 'products', 'transactions', 'stock', 'demand_tests', 'notifications'];
+  
+  for (const key of order) {
+    const tableName = TABLE_MAP[key];
+    const items = localData[key] || [];
+    
+    if (items.length === 0) {
+      results.push({ table: tableName, status: 'empty', count: 0 });
+      continue;
+    }
+
+    try {
+      // Delete existing data
+      await supabaseRequest(config, `${tableName}?id=neq.____`, 'DELETE');
+      
+      // Transform and insert
+      const transformed = (items as Record<string, unknown>[]).map(item => toSupabase(key, item));
+      
+      const insertResult = await supabaseRequest(config, tableName, 'POST', transformed);
+      
+      if (insertResult.ok) {
+        results.push({ table: tableName, status: 'success', count: items.length });
+      } else {
+        console.error(`Push ${tableName} error:`, insertResult.error);
+        results.push({ table: tableName, status: 'error', count: 0 });
+      }
+    } catch (err) {
+      console.error(`Push ${tableName} exception:`, err);
+      results.push({ table: tableName, status: 'error', count: 0 });
+    }
+  }
+
+  const successCount = results.filter(r => r.status === 'success' || r.status === 'empty').length;
+  const totalData = results.filter(r => r.status === 'success').reduce((s, r) => s + r.count, 0);
+  
+  // Update last sync
+  saveSupabaseConfig({ ...config, lastSync: new Date().toISOString() });
   
   return {
-    success: successCount === pushOrder.length,
-    message: successCount === pushOrder.length 
-      ? `✅ Push berhasil! ${details.filter(d => d.status.includes('✅')).reduce((s, d) => s + d.count, 0)} data tersinkronisasi.`
-      : `⚠️ Push sebagian berhasil: ${successCount}/${pushOrder.length} tabel`,
-    details,
+    success: successCount === order.length,
+    message: successCount === order.length 
+      ? `✅ Berhasil! ${totalData} data di-push ke Supabase`
+      : `⚠️ Sebagian gagal: ${successCount}/${order.length} tabel`,
+    results
   };
 }
 
-// Pull data from Supabase
-export async function pullFromSupabase(config: SupabaseConfig): Promise<{ 
-  success: boolean; 
+// PULL: Download all data from Supabase
+export async function pullFromSupabase(config: SupabaseConfig): Promise<{
+  success: boolean;
   message: string;
-  details: { table: string; status: string; count: number }[];
+  results: { table: string; status: string; count: number }[];
 }> {
-  const details: { table: string; status: string; count: number }[] = [];
-  const pullOrder = ['regions', 'branches', 'suppliers', 'products', 'users', 'transactions', 'stock', 'demand_tests', 'notifications'];
-  const cleanUrl = cleanSupabaseUrl(config.url);
+  const results: { table: string; status: string; count: number }[] = [];
   
-  for (const key of pullOrder) {
-    const tableName = tableNameMap[key];
+  const order = ['regions', 'branches', 'users', 'suppliers', 'products', 'transactions', 'stock', 'demand_tests', 'notifications'];
+  
+  for (const key of order) {
+    const tableName = TABLE_MAP[key];
     
     try {
-      const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=*`, {
-        method: 'GET',
-        headers: {
-          'apikey': config.anonKey,
-          'Authorization': `Bearer ${config.anonKey}`,
-          'Content-Type': 'application/json',
-        },
-      });
+      const result = await supabaseRequest(config, `${tableName}?select=*`);
       
-      if (response.ok) {
-        const items = await response.json();
-        const transformedData = transformToLocalFormat(key, items);
-        localStorage.setItem(`smp_${key}`, JSON.stringify(transformedData));
-        details.push({ table: tableName, status: '✅ OK', count: items.length });
+      if (result.ok && Array.isArray(result.data)) {
+        const transformed = result.data.map(item => fromSupabase(key, item as Record<string, unknown>));
+        localStorage.setItem(`smp_${key}`, JSON.stringify(transformed));
+        results.push({ table: tableName, status: 'success', count: result.data.length });
+      } else if (result.error?.includes('does not exist')) {
+        results.push({ table: tableName, status: 'no_table', count: 0 });
       } else {
-        const text = await response.text();
-        if (text.includes('does not exist')) {
-          details.push({ table: tableName, status: '⚠️ Tabel belum ada', count: 0 });
-        } else {
-          details.push({ table: tableName, status: `❌ ${response.status}`, count: 0 });
-        }
+        console.error(`Pull ${tableName} error:`, result.error);
+        results.push({ table: tableName, status: 'error', count: 0 });
       }
-    } catch (error) {
-      console.error(`Pull error for ${tableName}:`, error);
-      details.push({ table: tableName, status: '❌ Error', count: 0 });
+    } catch (err) {
+      console.error(`Pull ${tableName} exception:`, err);
+      results.push({ table: tableName, status: 'error', count: 0 });
     }
   }
+
+  const successCount = results.filter(r => r.status === 'success').length;
+  const totalData = results.reduce((s, r) => s + r.count, 0);
   
-  const successCount = details.filter(d => d.status.includes('✅')).length;
-  const updatedConfig = { ...config, lastSync: new Date().toISOString() };
-  saveSupabaseConfig(updatedConfig);
-  
-  const totalPulled = details.filter(d => d.status.includes('✅')).reduce((s, d) => s + d.count, 0);
+  // Update last sync
+  saveSupabaseConfig({ ...config, lastSync: new Date().toISOString() });
   
   return {
     success: successCount > 0,
-    message: successCount > 0 
-      ? `✅ Pull berhasil! ${totalPulled} data diambil. Refresh halaman untuk melihat data baru.`
-      : '❌ Tidak ada data yang bisa di-pull. Pastikan tabel sudah dibuat.',
-    details,
+    message: successCount > 0
+      ? `✅ Berhasil! ${totalData} data di-pull. Refresh halaman.`
+      : '❌ Gagal pull data. Pastikan tabel sudah dibuat.',
+    results
   };
 }
 
-// Get table info from Supabase
-export async function getTableInfo(config: SupabaseConfig): Promise<{ 
-  tables: { name: string; exists: boolean; count: number }[] 
+// Auto-check tables
+export async function autoSetupTables(config: SupabaseConfig): Promise<{
+  success: boolean;
+  message: string;
+  details: { table: string; status: string }[];
+  needsManualSetup: boolean;
+  allTablesExist: boolean;
 }> {
-  const tables: { name: string; exists: boolean; count: number }[] = [];
-  const cleanUrl = cleanSupabaseUrl(config.url);
+  const tableCheck = await checkTables(config);
   
-  for (const [, tableName] of Object.entries(tableNameMap)) {
-    try {
-      const response = await fetch(`${cleanUrl}/rest/v1/${tableName}?select=id&limit=1`, {
-        method: 'HEAD',
-        headers: {
-          'apikey': config.anonKey,
-          'Authorization': `Bearer ${config.anonKey}`,
-          'Prefer': 'count=exact',
-        },
-      });
-      
-      if (response.ok) {
-        const countHeader = response.headers.get('content-range');
-        const count = countHeader ? parseInt(countHeader.split('/')[1] || '0') : 0;
-        tables.push({ name: tableName, exists: true, count: isNaN(count) ? 0 : count });
-      } else {
-        tables.push({ name: tableName, exists: false, count: 0 });
-      }
-    } catch {
-      tables.push({ name: tableName, exists: false, count: 0 });
-    }
-  }
-  
-  return { tables };
+  const details = tableCheck.tables.map(t => ({
+    table: t.name,
+    status: t.exists 
+      ? (t.count >= 0 ? `✅ OK (${t.count})` : '⚠️ No access')
+      : '❌ Tidak ada'
+  }));
+
+  return {
+    success: tableCheck.allExist,
+    message: tableCheck.allExist 
+      ? '✅ Semua tabel sudah ada!'
+      : '⚠️ Beberapa tabel belum dibuat',
+    details,
+    needsManualSetup: !tableCheck.allExist,
+    allTablesExist: tableCheck.allExist
+  };
+}
+
+// Alias for compatibility
+export function generateFullSetupSQL(): string {
+  return generateSetupSQL();
+}
+
+export async function getTableInfo(config: SupabaseConfig): Promise<{
+  tables: { name: string; exists: boolean; count: number }[];
+}> {
+  const result = await checkTables(config);
+  return { tables: result.tables };
 }

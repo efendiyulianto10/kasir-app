@@ -92,7 +92,7 @@ export default function AdminPanel({
     }
 
     setIsTesting(true);
-    setSyncMessage(null);
+    setSyncMessage({ type: 'info', text: 'Menghubungkan ke Supabase...' });
 
     const result = await testConnection(supabaseUrl, supabaseKey);
     
@@ -104,9 +104,22 @@ export default function AdminPanel({
       };
       saveSupabaseConfig(config);
       setSupabaseConfig(config);
-      setSyncMessage({ type: 'success', text: result.message });
+      
+      // Auto check tables after successful connection
+      setSyncMessage({ type: 'info', text: '✅ Terhubung! Mengecek tabel...' });
+      const tableCheck = await autoSetupTables(config);
+      const tableInfo = await getTableInfo(config);
+      setTableStatus(tableInfo.tables);
+      
+      if (tableCheck.allTablesExist) {
+        setSyncMessage({ type: 'success', text: '✅ Koneksi berhasil! Semua tabel siap.' });
+      } else {
+        setSetupSQL(generateFullSetupSQL());
+        setSyncMessage({ type: 'error', text: '✅ Terhubung, tapi tabel belum lengkap. Jalankan SQL Setup.' });
+      }
     } else {
-      setSyncMessage({ type: 'error', text: result.message });
+      const hint = (result as { hint?: string }).hint;
+      setSyncMessage({ type: 'error', text: result.message + (hint ? `\n\n💡 ${hint}` : '') });
     }
 
     setIsTesting(false);
@@ -123,10 +136,21 @@ export default function AdminPanel({
 
     const result = await pushToSupabase(supabaseConfig);
     
-    setSyncMessage({ type: result.success ? 'success' : 'error', text: result.message });
+    // Show detailed results
+    const details = result.results
+      .map(r => `${r.status === 'success' ? '✅' : r.status === 'empty' ? '⏭️' : '❌'} ${r.table}: ${r.count}`)
+      .join('\n');
+    
+    setSyncMessage({ 
+      type: result.success ? 'success' : 'error', 
+      text: `${result.message}\n\n${details}` 
+    });
     
     if (result.success) {
       setSupabaseConfig(getSupabaseConfig());
+      // Refresh table status
+      const info = await getTableInfo(supabaseConfig);
+      setTableStatus(info.tables);
     }
 
     setIsPushing(false);
@@ -147,10 +171,18 @@ export default function AdminPanel({
 
     const result = await pullFromSupabase(supabaseConfig);
     
-    setSyncMessage({ type: result.success ? 'success' : 'error', text: result.message });
+    // Show detailed results
+    const details = result.results
+      .map(r => `${r.status === 'success' ? '✅' : r.status === 'no_table' ? '⚠️' : '❌'} ${r.table}: ${r.count}`)
+      .join('\n');
+    
+    setSyncMessage({ 
+      type: result.success ? 'success' : 'error', 
+      text: `${result.message}\n\n${details}` 
+    });
     
     if (result.success) {
-      setTimeout(() => window.location.reload(), 1500);
+      setTimeout(() => window.location.reload(), 2000);
     }
 
     setIsPulling(false);
